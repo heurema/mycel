@@ -18,6 +18,12 @@ pub struct Config {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RelayConfig {
     pub urls: Vec<String>,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_timeout_secs() -> u64 {
+    10
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,6 +37,7 @@ impl Default for Config {
         Self {
             relays: RelayConfig {
                 urls: DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect(),
+                timeout_secs: default_timeout_secs(),
             },
             identity: IdentityConfig {
                 storage: "keychain".to_string(),
@@ -78,8 +85,6 @@ pub fn save(cfg: &Config) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
     /// Build a Config and serialise/deserialise it to/from a temp directory.
     #[test]
     fn test_config_creation() {

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use nostr_sdk::prelude::*;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::{config, crypto, envelope, error::SYNC_OVERLAP_SECS, nostr as mycel_nostr, store};
 
@@ -13,6 +13,7 @@ pub async fn run(json: bool, all: bool) -> Result<()> {
 
     // 2. Load config
     let cfg = config::load()?;
+    let timeout = Duration::from_secs(cfg.relays.timeout_secs);
     let relay_urls = cfg.relays.urls;
 
     // 3. Open DB
@@ -33,8 +34,12 @@ pub async fn run(json: bool, all: bool) -> Result<()> {
     let since = min_cursor.saturating_sub(SYNC_OVERLAP_SECS);
 
     // 5. Connect and fetch Gift Wraps
-    let client = mycel_nostr::build_client(keys.clone(), &relay_urls).await?;
-    let events = mycel_nostr::fetch_gift_wraps(&client, &relay_urls, &my_pubkey, since).await?;
+    let client = mycel_nostr::build_client(keys.clone(), &relay_urls)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e} — could not connect to relay; check your network connection"))?;
+    let events = mycel_nostr::fetch_gift_wraps(&client, &relay_urls, &my_pubkey, since, timeout)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e} — relay unreachable during inbox fetch; check your network connection"))?;
 
     if !json {
         eprintln!("Fetched {} event(s) from {} relay(s)", events.len(), relay_urls.len());

@@ -171,7 +171,7 @@ mod tests {
     async fn test_config_creation() {
         let dir = TempDir::new().unwrap();
         let cfg_dir = dir.path().join("config");
-        let data_dir = dir.path().join("data");
+        let _data_dir = dir.path().join("data");
 
         // Directly write a config
         std::fs::create_dir_all(&cfg_dir).unwrap();

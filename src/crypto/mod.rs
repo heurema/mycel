@@ -190,7 +190,8 @@ pub fn load_keys(enc_path: &Path) -> Result<Keys> {
     // Try encrypted file
     if enc_path.exists() {
         let passphrase = get_passphrase("Enter passphrase to unlock your key: ")?;
-        let hex = load_key_file(enc_path, &passphrase)?;
+        let hex = load_key_file(enc_path, &passphrase)
+            .map_err(|e| anyhow::anyhow!("{e} — wrong passphrase or corrupted key file"))?;
         let keys = Keys::parse(&hex)
             .map_err(|e| anyhow::anyhow!("invalid key from file: {e}"))?;
         return Ok(keys);

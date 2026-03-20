@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use nostr_sdk::prelude::*;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::cli::contacts::resolve_address_to_hex;
 use crate::{config, crypto, envelope, nostr as mycel_nostr, store};
@@ -19,8 +19,9 @@ pub async fn run(recipient: &str, message: &str) -> Result<()> {
     let keys = crypto::load_keys(&enc_path)?;
     let sender_hex = keys.public_key().to_hex();
 
-    // 3. Load config for relay URLs
+    // 3. Load config for relay URLs and timeout
     let cfg = config::load()?;
+    let timeout = Duration::from_secs(cfg.relays.timeout_secs);
     let relay_urls = cfg.relays.urls;
 
     // 4. Open DB and resolve recipient
@@ -38,8 +39,12 @@ pub async fn run(recipient: &str, message: &str) -> Result<()> {
         EventBuilder::new(Kind::PrivateDirectMessage, &env_json).build(keys.public_key());
 
     // 7. Connect to relays and publish Gift Wrap
-    let client = mycel_nostr::build_client(keys, &relay_urls).await?;
-    let (event_id, ok_count) = mycel_nostr::publish_gift_wrap(&client, &relay_urls, &recipient_pk, rumor).await?;
+    let client = mycel_nostr::build_client(keys, &relay_urls)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e} — could not connect to relay; check your network connection"))?;
+    let (event_id, ok_count) = mycel_nostr::publish_gift_wrap(&client, &relay_urls, &recipient_pk, rumor, timeout)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e} — relay unreachable; check your network connection"))?;
 
     let total = relay_urls.len();
     let failed = total - ok_count;
@@ -66,7 +71,10 @@ pub async fn run(recipient: &str, message: &str) -> Result<()> {
     client.disconnect().await;
 
     if ok_count == 0 {
-        bail!("Failed: no relay accepted the message");
+        let tried = relay_urls.join(", ");
+        bail!(
+            "no relay accepted the message (relays tried: {tried}); check relay URLs in your config"
+        );
     } else if failed > 0 {
         println!("Sent ({ok_count}/{total} relays, {failed} failed)");
     } else {

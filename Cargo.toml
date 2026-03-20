@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "Encrypted async mailbox for AI CLI agents"
 license = "MIT"
-repository = "https://github.com/vitalyd/mycel"
+repository = "https://github.com/heurema/mycel"
 homepage = "https://mycel.run"
+readme = "README.md"
 keywords = ["nostr", "messaging", "cli", "agents", "encrypted"]
 categories = ["command-line-utilities", "cryptography"]
 

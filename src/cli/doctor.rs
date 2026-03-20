@@ -66,11 +66,12 @@ pub async fn run() -> Result<()> {
     }
 
     // 4. Relay connectivity
+    let relay_timeout = Duration::from_secs(cfg.relays.timeout_secs);
     println!("Relays:");
     let mut reachable = 0u32;
     for url in &cfg.relays.urls {
         print!("  {url:<40} ");
-        if check_relay(url).await {
+        if check_relay(url, relay_timeout).await {
             println!("reachable");
             reachable += 1;
         } else {
@@ -96,13 +97,13 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-async fn check_relay(url: &str) -> bool {
+async fn check_relay(url: &str, connect_timeout: Duration) -> bool {
     let Some((host, port)) = extract_host_port(url) else {
         return false;
     };
     let addr = format!("{host}:{port}");
     matches!(
-        timeout(Duration::from_secs(5), TcpStream::connect(&addr)).await,
+        timeout(connect_timeout, TcpStream::connect(&addr)).await,
         Ok(Ok(_))
     )
 }

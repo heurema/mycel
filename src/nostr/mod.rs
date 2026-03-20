@@ -12,9 +12,6 @@ use std::time::Duration;
 use anyhow::Result;
 use nostr_sdk::prelude::*;
 
-/// Relay operation timeout
-pub const RELAY_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Build a nostr-sdk Client with the given keys and relay URLs.
 pub async fn build_client(keys: Keys, relay_urls: &[String]) -> Result<Client> {
     let client = Client::new(keys);
@@ -27,15 +24,21 @@ pub async fn build_client(keys: Keys, relay_urls: &[String]) -> Result<Client> {
 
 /// Publish a Gift Wrap event for `rumor` to the given relay URLs.
 /// Returns the event id and the number of relays that accepted it.
+/// The `timeout` is applied as a deadline for the entire publish operation.
 pub async fn publish_gift_wrap(
     client: &Client,
     relay_urls: &[String],
     receiver: &PublicKey,
     rumor: UnsignedEvent,
+    timeout: Duration,
 ) -> Result<(EventId, usize)> {
-    let output = client
-        .gift_wrap_to(relay_urls.iter().map(|s| s.as_str()), receiver, rumor, [])
-        .await?;
+    let output = tokio::time::timeout(
+        timeout,
+        client.gift_wrap_to(relay_urls.iter().map(|s| s.as_str()), receiver, rumor, []),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("relay publish timed out after {}s", timeout.as_secs()))?
+    .map_err(|e| anyhow::anyhow!("relay publish failed: {e}"))?;
     let ok_count = output.success.len();
     Ok((output.val, ok_count))
 }
@@ -47,6 +50,7 @@ pub async fn fetch_gift_wraps(
     relay_urls: &[String],
     recipient: &PublicKey,
     since_secs: u64,
+    timeout: Duration,
 ) -> Result<Vec<Event>> {
     let since = Timestamp::from(since_secs);
     let filter = Filter::new()
@@ -55,7 +59,7 @@ pub async fn fetch_gift_wraps(
         .since(since);
 
     let events = client
-        .fetch_events_from(relay_urls.iter().map(|s| s.as_str()), filter, RELAY_TIMEOUT)
+        .fetch_events_from(relay_urls.iter().map(|s| s.as_str()), filter, timeout)
         .await?;
 
     Ok(events.into_iter().collect())
