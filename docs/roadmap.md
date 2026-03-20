@@ -6,20 +6,21 @@
 - [x] Name: mycel (crates.io free, mycel.run domain)
 - [x] Freeze contracts: C1-C7 in architecture.md (send semantics, sync cursor, local encryption, key storage, --json, terminal safety, message size)
 - [x] Address format: npub (standard bech32) for v0.1
-- [ ] Keyring spike: save/load secret on macOS, verify fallback path
-- [ ] LICENSE file
+- [x] Keyring spike: verified via Phase 0 implementation (keychain + file fallback work)
+- [x] LICENSE file (MIT)
 - [ ] GitHub repo
 
-## Phase 0 — Foundation (Week 1)
+## Phase 0 — Foundation (DONE — 2026-03-20)
 
-- [ ] Cargo project setup (single crate for v0.1)
-- [ ] Key generation: secp256k1 keypair via nostr-sdk
-- [ ] Key encryption at rest (keychain preferred, passphrase+argon2 fallback)
-- [ ] SQLite schema (messages, contacts, sync_state, relays)
-- [ ] mycel envelope type (serialize/deserialize)
-- [ ] `mycel init` — full setup: keygen + relay test + print address
-- [ ] `mycel id` — show own address
-- [ ] Unit tests for core types and key management
+- [x] Cargo project setup (single crate)
+- [x] Key generation: secp256k1 keypair via nostr-sdk
+- [x] Key encryption at rest (keychain preferred, passphrase+argon2 fallback)
+- [x] SQLite schema (messages, contacts, sync_state, relays)
+- [x] mycel envelope type (serialize/deserialize)
+- [x] `mycel init` — keygen + encrypt + store + DB + config + relay test + print npub
+- [x] `mycel id` — load key + print npub
+- [x] 13 unit tests (keygen, key storage, roundtrip, DB, config, relay, no-overwrite, id)
+- [x] Clippy clean, audit fixes (key file 0600, atomic write, init order, keychain fallback UX)
 
 ## Phase 1 — Send & Receive (Week 2)
 
