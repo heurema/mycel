@@ -6,13 +6,11 @@ use crate::cli::contacts::resolve_address_to_hex;
 use crate::{config, crypto, envelope, nostr as mycel_nostr, store};
 
 pub async fn run(recipient: &str, message: &str) -> Result<()> {
-    // 1. Validate message size (C7)
-    envelope::validate_message_size(message)?;
-
-    // Reject empty messages
+    // 1. Reject empty messages first, then validate size
     if message.trim().is_empty() {
         bail!("message cannot be empty");
     }
+    envelope::validate_message_size(message)?;
 
     // 2. Load keypair
     let enc_path = config::config_dir()?.join("key.enc");
@@ -47,7 +45,7 @@ pub async fn run(recipient: &str, message: &str) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{e} — relay unreachable; check your network connection"))?;
 
     let total = relay_urls.len();
-    let failed = total - ok_count;
+    let failed = total.saturating_sub(ok_count);
 
     // 8. Determine delivery status (C1: 1 relay ack = success)
     let delivery_status = if ok_count > 0 { "delivered" } else { "failed" };

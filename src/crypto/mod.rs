@@ -61,9 +61,11 @@ fn derive_key(passphrase: &str, salt: &SaltString) -> Result<[u8; 32]> {
         .map_err(|e| anyhow::anyhow!("argon2 error: {e}"))?;
     let hash_bytes = hash.hash.ok_or_else(|| anyhow::anyhow!("argon2 hash missing"))?;
     let hash_slice = hash_bytes.as_bytes();
+    if hash_slice.len() < 32 {
+        return Err(anyhow::anyhow!("argon2 hash too short: {} bytes (need 32)", hash_slice.len()));
+    }
     let mut key = [0u8; 32];
-    let len = hash_slice.len().min(32);
-    key[..len].copy_from_slice(&hash_slice[..len]);
+    key.copy_from_slice(&hash_slice[..32]);
     Ok(key)
 }
 

@@ -21,7 +21,11 @@ pub async fn run() -> Result<()> {
         match crypto::load_keys(&enc_path) {
             Ok(keys) => {
                 let npub = keys.public_key().to_bech32().unwrap_or_default();
-                println!("OK ({}...{})", &npub[..12], &npub[npub.len() - 4..]);
+                if npub.len() >= 16 {
+                    println!("OK ({}...{})", &npub[..12], &npub[npub.len() - 4..]);
+                } else {
+                    println!("OK ({npub})");
+                }
             }
             Err(e) => {
                 println!("ERROR — cannot unlock: {e}");

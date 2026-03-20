@@ -64,10 +64,25 @@ pub async fn run(json: bool, all: bool) -> Result<()> {
             Err(_) => continue, // Skip non-mycel events
         };
 
+        // Validate envelope version
+        if env.v != 1 {
+            continue; // Skip incompatible wire format versions
+        }
+
+        // Validate sender identity: env.from must match cryptographic sender
+        if env.from != sender_hex {
+            tracing::warn!("envelope sender mismatch: env.from={} != signed={}", &env.from[..env.from.len().min(12)], &sender_hex[..12]);
+            continue; // Possible spoofing attempt
+        }
+
         // Validate receive-side message size (defense against oversized payloads)
         if env.msg.len() > crate::error::MAX_MESSAGE_SIZE {
             continue; // Drop oversized messages silently
         }
+
+        // Dedup by nostr_id first (C2: INSERT OR IGNORE) — before trust check
+        // This ensures blocked events are recorded and not re-processed
+        let nostr_id = event.id.to_hex();
 
         // Check trust tier
         let trust_tier = match store::get_contact_by_pubkey(&conn, &sender_hex)? {
@@ -75,13 +90,12 @@ pub async fn run(json: bool, all: bool) -> Result<()> {
             None => "unknown".to_string(),
         };
 
-        // Drop blocked senders (AC12)
-        if trust_tier == "blocked" {
-            continue;
-        }
-
-        // Dedup by nostr_id (C2: INSERT OR IGNORE)
-        let nostr_id = event.id.to_hex();
+        // Determine delivery status based on trust
+        let delivery_status = if trust_tier == "blocked" {
+            "blocked"
+        } else {
+            "received"
+        };
         let now = now_iso8601();
         // Sanitize timestamp from untrusted source (strip ANSI/control chars)
         let safe_ts = sanitize_for_terminal(&env.ts);
@@ -91,12 +105,12 @@ pub async fn run(json: bool, all: bool) -> Result<()> {
             sender: sender_hex,
             recipient: my_hex.clone(),
             content: env.msg,
-            delivery_status: "received".to_string(),
-            read_status: "unread".to_string(),
+            delivery_status: delivery_status.to_string(),
+            read_status: if delivery_status == "blocked" { "blocked".to_string() } else { "unread".to_string() },
             created_at: safe_ts,
             received_at: now,
         };
-        if store::insert_message(&conn, &msg)? {
+        if store::insert_message(&conn, &msg)? && delivery_status != "blocked" {
             new_count += 1;
         }
     }
@@ -173,7 +187,7 @@ fn sender_label(conn: &rusqlite::Connection, sender_hex: &str) -> String {
         Ok(pk) => match pk.to_bech32() {
             Ok(npub) if npub.len() > 16 => format!("{}...{}", &npub[..12], &npub[npub.len() - 4..]),
             Ok(npub) => npub,
-            Err(_) => sender_hex[..12].to_string(),
+            Err(_) => sender_hex[..sender_hex.len().min(12)].to_string(),
         },
         Err(_) => sender_hex[..sender_hex.len().min(12)].to_string(),
     }
@@ -195,24 +209,52 @@ pub fn sanitize_for_terminal(content: &str) -> String {
         content.to_string()
     };
 
-    // Strip ANSI escape sequences: ESC [ ... final_byte
+    // Strip ALL escape sequences: CSI, OSC, DCS, SS3, and bare ESC
     let mut result = String::with_capacity(truncated.len());
     let mut chars = truncated.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
-            // Skip ESC sequence: consume until letter or end
-            if chars.peek() == Some(&'[') {
-                chars.next(); // consume '['
-                while let Some(&next) = chars.peek() {
+            match chars.peek() {
+                // CSI: ESC [ ... final_byte (letter or ~)
+                Some(&'[') => {
                     chars.next();
-                    if next.is_ascii_alphabetic() || next == '~' {
-                        break;
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next.is_ascii_alphabetic() || next == '~' { break; }
                     }
                 }
+                // OSC: ESC ] ... (terminated by BEL \x07 or ST = ESC \)
+                Some(&']') => {
+                    chars.next();
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next == '\x07' { break; } // BEL terminator
+                        if next == '\x1b' {
+                            if chars.peek() == Some(&'\\') { chars.next(); }
+                            break; // ST terminator
+                        }
+                    }
+                }
+                // DCS: ESC P ... ST  |  SS3: ESC O ...
+                Some(&'P') | Some(&'O') => {
+                    chars.next();
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next == '\x1b' {
+                            if chars.peek() == Some(&'\\') { chars.next(); }
+                            break;
+                        }
+                        if next == '\x07' { break; }
+                        // SS3 sequences are single-char after ESC O
+                        if c == 'O' && next.is_ascii_alphabetic() { break; }
+                    }
+                }
+                // Bare ESC or unknown — skip
+                _ => {}
             }
             continue;
         }
-        // Strip control characters except \n
+        // Strip control characters except \n (catches BEL \x07, etc.)
         if c.is_control() && c != '\n' {
             continue;
         }
