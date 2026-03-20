@@ -168,6 +168,7 @@ pub fn generate_and_store(enc_path: &Path) -> Result<(Keys, StorageBackend)> {
 }
 
 /// Generate and store using ONLY file backend (skip keychain).
+#[allow(dead_code)]
 pub fn generate_and_store_file(enc_path: &Path) -> Result<(Keys, StorageBackend)> {
     let keys = Keys::generate();
     let secret_hex = Zeroizing::new(keys.secret_key().to_secret_hex());

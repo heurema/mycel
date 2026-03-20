@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::error::MAX_MESSAGE_SIZE;
+
 /// mycel wire format v1
 ///
 /// Carried inside Nostr event content (NIP-44 encrypted).
@@ -30,6 +32,18 @@ impl Envelope {
     }
 }
 
+/// Validate message size per C7. Returns Err with byte count if too large.
+pub fn validate_message_size(msg: &str) -> Result<(), crate::error::MycelError> {
+    let size = msg.len();
+    if size > MAX_MESSAGE_SIZE {
+        return Err(crate::error::MycelError::MessageTooLarge {
+            size,
+            max: MAX_MESSAGE_SIZE,
+        });
+    }
+    Ok(())
+}
+
 /// ISO 8601 UTC timestamp without chrono dependency
 fn chrono_free_now() -> String {
     use std::time::SystemTime;
@@ -46,7 +60,7 @@ fn chrono_free_now() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{mins:02}:{secs:02}Z")
 }
 
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+pub fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
     let mut year = 1970;
     loop {
         let year_days = if is_leap(year) { 366 } else { 365 };
@@ -98,5 +112,19 @@ mod tests {
     fn message_size_cap() {
         let big_msg = "x".repeat(8193);
         assert!(big_msg.len() > 8192, "C7: messages over 8KB should be rejected");
+    }
+
+    #[test]
+    fn test_message_size_cap() {
+        // Exact limit is fine
+        let ok_msg = "x".repeat(8192);
+        assert!(validate_message_size(&ok_msg).is_ok());
+
+        // One byte over the limit should fail
+        let big_msg = "x".repeat(8193);
+        let err = validate_message_size(&big_msg).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("8193"), "error should show byte count");
+        assert!(msg.contains("8192"), "error should show max");
     }
 }

@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[allow(dead_code)]
 pub enum MycelError {
     #[error("not initialized — run `mycel init` first")]
     NotInitialized,

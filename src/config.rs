@@ -65,6 +65,7 @@ pub fn load() -> Result<Config> {
 }
 
 /// Write config to config_dir/config.toml
+#[allow(dead_code)]
 pub fn save(cfg: &Config) -> Result<PathBuf> {
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir)?;
