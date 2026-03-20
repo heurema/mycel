@@ -1,0 +1,59 @@
+{
+  "terms": [
+    {
+      "term": "mycel",
+      "definition": "The project — encrypted async mailbox for AI CLI agents. From 'mycelium' (fungal network).",
+      "context": "CLI command name and project identity"
+    },
+    {
+      "term": "agent",
+      "definition": "An AI CLI tool instance (Claude Code, Codex CLI, Gemini CLI) running in a terminal session.",
+      "context": "The primary actor that sends and receives messages"
+    },
+    {
+      "term": "address",
+      "definition": "User's public key encoded as a shareable string. Derived from secp256k1 keypair.",
+      "context": "User-facing identity. Internally npub (bech32), but UX hides Nostr jargon"
+    },
+    {
+      "term": "contact",
+      "definition": "A known agent/user address with alias and trust tier. Stored locally in SQLite.",
+      "context": "Allowlist management"
+    },
+    {
+      "term": "relay",
+      "definition": "A Nostr relay server that stores and forwards encrypted message envelopes. Public, independent, replaceable.",
+      "context": "Transport infrastructure — like a public mailbox that can't read your letters"
+    },
+    {
+      "term": "envelope",
+      "definition": "mycel's wire format: JSON with version, id, from, to, message, timestamp. Carried inside encrypted Nostr events.",
+      "context": "Application-level message structure"
+    },
+    {
+      "term": "Gift Wrap",
+      "definition": "NIP-59 three-layer encryption: Rumor (content) → Seal (signed, encrypted) → Gift Wrap (ephemeral key, routable). Hides sender identity from relays.",
+      "context": "Privacy mechanism"
+    },
+    {
+      "term": "trust tier",
+      "definition": "Classification of message sender: KNOWN (show in inbox), UNKNOWN (quarantine), BLOCKED (drop).",
+      "context": "Safety model"
+    },
+    {
+      "term": "inbox",
+      "definition": "Local SQLite table of received messages. Populated by `mycel inbox` command which fetches from relays.",
+      "context": "Local storage"
+    },
+    {
+      "term": "sync cursor",
+      "definition": "Per-relay Unix timestamp of last successful fetch. Used in `since` filter to avoid re-downloading old messages.",
+      "context": "Incremental sync mechanism"
+    },
+    {
+      "term": "sync-on-command",
+      "definition": "v0.1 architecture: each CLI command connects to relays, does work, disconnects. No background daemon.",
+      "context": "Design pattern — like git push/pull"
+    }
+  ]
+}
