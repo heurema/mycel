@@ -44,8 +44,8 @@
 - [x] Config file (~/.config/mycel/config.toml)
 - [x] Message size cap + clear error on oversized
 - [x] README + install instructions
+- [x] GitHub repo (heurema/mycel)
 - [ ] Error handling: relay errors, network timeouts, key unlock failures
-- [ ] GitHub repo
 - [ ] Release binary (cargo-dist or manual)
 - [ ] Publish to crates.io
 
