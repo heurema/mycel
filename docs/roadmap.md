@@ -8,7 +8,7 @@
 - [x] Address format: npub (standard bech32) for v0.1
 - [x] Keyring spike: verified via Phase 0 implementation (keychain + file fallback work)
 - [x] LICENSE file (MIT)
-- [ ] GitHub repo
+- [x] GitHub repo
 
 ## Phase 0 — Foundation (DONE — 2026-03-20)
 
@@ -22,27 +22,30 @@
 - [x] 13 unit tests (keygen, key storage, roundtrip, DB, config, relay, no-overwrite, id)
 - [x] Clippy clean, audit fixes (key file 0600, atomic write, init order, keychain fallback UX)
 
-## Phase 1 — Send & Receive (Week 2)
+## Phase 1 — Send & Receive (DONE — 2026-03-20)
 
-- [ ] Relay connection (connect/disconnect, multi-relay)
-- [ ] NIP-44 encryption (via nostr-sdk)
-- [ ] NIP-59 Gift Wrap pipeline (Rumor → Seal → Gift Wrap)
-- [ ] `mycel send <contact> "message"` — full pipeline
-- [ ] `mycel inbox` — fetch, decrypt, display, sync cursor
-- [ ] Deduplication by nostr_id
-- [ ] Trust tier enforcement (KNOWN/UNKNOWN/BLOCKED)
-- [ ] `mycel contacts add/block/list`
+- [x] Relay connection (connect/disconnect, multi-relay)
+- [x] NIP-44 encryption (via nostr-sdk)
+- [x] NIP-59 Gift Wrap pipeline (Rumor → Seal → Gift Wrap)
+- [x] `mycel send <contact> "message"` — full pipeline
+- [x] `mycel inbox` — fetch, decrypt, display, sync cursor
+- [x] Deduplication by nostr_id
+- [x] Trust tier enforcement (KNOWN/UNKNOWN/BLOCKED)
+- [x] `mycel contacts add/block/list`
+- [x] Receive-side security: size validation, terminal sanitization of all fields, event-based cursor
+- [x] 41 tests, clippy clean
 - [ ] Integration test: send + receive via public relay
 
 ## Phase 2 — Polish & Ship (Week 3)
 
-- [ ] `mycel doctor` — relay health, key status, connectivity test
-- [ ] `mycel inbox --json` — machine-readable output for agents
-- [ ] `mycel inbox --all` — show quarantined messages
-- [ ] Config file (~/.config/mycel/config.toml)
-- [ ] Message size cap + clear error on oversized
+- [x] `mycel doctor` — relay health, key status, connectivity test
+- [x] `mycel inbox --json` — machine-readable output for agents
+- [x] `mycel inbox --all` — show quarantined messages
+- [x] Config file (~/.config/mycel/config.toml)
+- [x] Message size cap + clear error on oversized
+- [x] README + install instructions
 - [ ] Error handling: relay errors, network timeouts, key unlock failures
-- [ ] README + install instructions
+- [ ] GitHub repo
 - [ ] Release binary (cargo-dist or manual)
 - [ ] Publish to crates.io
 
