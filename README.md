@@ -68,6 +68,19 @@ You (mycel send)                    Alice (mycel inbox)
 
 Use `mycel inbox --all` to see quarantined messages.
 
+## Configuration
+
+Config file: `~/.config/mycel/config.toml` (created on `mycel init`)
+
+```toml
+[relays]
+urls = ["wss://nos.lol", "wss://relay.damus.io", "wss://relay.nostr.band"]
+timeout_secs = 10
+
+[identity]
+storage = "keychain"
+```
+
 ## Key Storage
 
 Private keys are encrypted at rest:
