@@ -27,7 +27,7 @@ impl Envelope {
             from,
             to,
             msg,
-            ts: chrono_free_now(),
+            ts: now_iso8601(),
         }
     }
 }
@@ -44,8 +44,9 @@ pub fn validate_message_size(msg: &str) -> Result<(), crate::error::MycelError> 
     Ok(())
 }
 
-/// ISO 8601 UTC timestamp without chrono dependency
-fn chrono_free_now() -> String {
+/// ISO 8601 UTC timestamp without chrono dependency.
+/// Shared by all modules — do not duplicate.
+pub fn now_iso8601() -> String {
     use std::time::SystemTime;
     let duration = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -75,7 +76,7 @@ pub fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
     } else {
         [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     };
-    let mut month = 0;
+    let mut month = 12; // default to December if loop exhausts (shouldn't happen)
     for (i, &md) in month_days.iter().enumerate() {
         if days < md {
             month = i as u64 + 1;

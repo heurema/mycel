@@ -1,6 +1,6 @@
 use anyhow::Result;
 use nostr_sdk::prelude::*;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use crate::{config, crypto, envelope, error::SYNC_OVERLAP_SECS, nostr as mycel_nostr, store};
 
@@ -264,15 +264,7 @@ pub fn sanitize_for_terminal(content: &str) -> String {
 }
 
 fn now_iso8601() -> String {
-    let secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let (days, rem) = (secs / 86400, secs % 86400);
-    let (hours, rem) = (rem / 3600, rem % 3600);
-    let (mins, secs) = (rem / 60, rem % 60);
-    let (year, month, day) = crate::envelope::days_to_ymd(days);
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{mins:02}:{secs:02}Z")
+    crate::envelope::now_iso8601()
 }
 
 #[cfg(test)]

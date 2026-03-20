@@ -126,7 +126,12 @@ pub fn load_key_file(enc_path: &Path, passphrase: &str) -> Result<Zeroizing<Stri
     let plaintext = cipher
         .decrypt(nonce, &data[SALT_LEN + NONCE_LEN..])
         .map_err(|_| anyhow::anyhow!("decryption failed — wrong passphrase?"))?;
-    Ok(Zeroizing::new(String::from_utf8(plaintext)?))
+    let secret = String::from_utf8(plaintext).map_err(|e| {
+        // Ensure the secret bytes are dropped — FromUtf8Error holds the original Vec
+        let _ = e.into_bytes();
+        anyhow::anyhow!("decrypted key is not valid UTF-8")
+    })?;
+    Ok(Zeroizing::new(secret))
 }
 
 /// Get passphrase: env var first, then prompt.

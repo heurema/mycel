@@ -222,14 +222,14 @@ pub fn get_sync_cursor(conn: &Connection, relay_url: &str) -> Result<u64> {
             |row| row.get::<_, i64>(0),
         )
         .optional()?;
-    Ok(result.unwrap_or(0) as u64)
+    Ok(result.unwrap_or(0).max(0) as u64)
 }
 
 /// Update sync cursor for a relay URL
 pub fn update_sync_cursor(conn: &Connection, relay_url: &str, last_sync: u64) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO sync_state (relay_url, last_sync) VALUES (?1, ?2)",
-        rusqlite::params![relay_url, last_sync as i64],
+        rusqlite::params![relay_url, i64::try_from(last_sync).unwrap_or(i64::MAX)],
     )?;
     Ok(())
 }

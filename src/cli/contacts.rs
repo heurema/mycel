@@ -95,8 +95,12 @@ pub fn resolve_address_to_hex(conn: &Connection, address: &str) -> Result<String
 
 /// Parse npub1... or hex public key, return hex.
 pub fn resolve_npub_to_hex(address: &str) -> Result<String> {
+    let safe_addr: String = address.chars()
+        .filter(|c| !c.is_control() && *c != '\x1b')
+        .take(128)
+        .collect();
     let pk = PublicKey::parse(address)
-        .with_context(|| format!("invalid address: '{address}' (expected npub1... or hex)"))?;
+        .with_context(|| format!("invalid address: '{safe_addr}' (expected npub1... or hex)"))?;
     Ok(pk.to_hex())
 }
 
@@ -116,48 +120,8 @@ fn pubkey_hex_to_npub(hex: &str) -> String {
     }
 }
 
-/// Current time as ISO 8601 UTC string.
 fn now_iso8601() -> String {
-    use std::time::SystemTime;
-    let secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let (days, rem) = (secs / 86400, secs % 86400);
-    let (hours, rem) = (rem / 3600, rem % 3600);
-    let (mins, secs) = (rem / 60, rem % 60);
-    let (year, month, day) = days_to_ymd(days);
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{mins:02}:{secs:02}Z")
-}
-
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    let mut year = 1970u64;
-    loop {
-        let year_days = if is_leap(year) { 366 } else { 365 };
-        if days < year_days {
-            break;
-        }
-        days -= year_days;
-        year += 1;
-    }
-    let month_days: [u64; 12] = if is_leap(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut month = 0u64;
-    for (i, &md) in month_days.iter().enumerate() {
-        if days < md {
-            month = i as u64 + 1;
-            break;
-        }
-        days -= md;
-    }
-    (year, month, days + 1)
-}
-
-fn is_leap(year: u64) -> bool {
-    year.is_multiple_of(4) && !year.is_multiple_of(100) || year.is_multiple_of(400)
+    crate::envelope::now_iso8601()
 }
 
 #[cfg(test)]
