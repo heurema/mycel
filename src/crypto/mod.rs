@@ -26,6 +26,8 @@ const SALT_LEN: usize = 22; // SaltString base64 len (16 bytes raw)
 
 /// Attempt to store secret key hex in OS keychain.
 /// Returns Ok(true) on success, Ok(false) if keychain unavailable.
+/// Note: in-process read-back cannot detect silent keychain failures
+/// (keyring crate caches in-process). Cross-process verification is done in init.
 fn try_store_keychain(secret_hex: &str) -> Result<bool> {
     let entry = keyring::Entry::new(SERVICE, ACCOUNT)?;
     match entry.set_password(secret_hex) {

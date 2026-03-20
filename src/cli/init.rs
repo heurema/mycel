@@ -80,11 +80,43 @@ pub async fn run_with_dirs(
 
     // AC1+AC2: generate keypair and store (last step — if this succeeds, init is complete)
     let (keys, backend) = crypto::generate_and_store(&enc_path)?;
+
+    // Verify persistence: spawn a subprocess to check keychain read-back.
+    // In-process keyring reads succeed from cache even when the entry doesn't persist.
+    let verified_backend = if matches!(backend, crypto::StorageBackend::Keychain) {
+        let verify_ok = std::process::Command::new(std::env::current_exe()?)
+            .args(["id"])
+            .env("MYCEL_KEY_PASSPHRASE", "unused-keychain-path")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if verify_ok {
+            backend
+        } else {
+            // Keychain wrote OK in-process but doesn't persist across loads.
+            // Fall back to encrypted file.
+            eprintln!("Warning: keychain did not persist key. Falling back to encrypted file.");
+            let secret_hex = zeroize::Zeroizing::new(keys.secret_key().to_secret_hex());
+            let passphrase = if let Ok(p) = std::env::var("MYCEL_KEY_PASSPHRASE") {
+                zeroize::Zeroizing::new(p)
+            } else {
+                zeroize::Zeroizing::new(rpassword::prompt_password("Enter passphrase to protect your key: ")?)
+            };
+            crypto::store_key_file(&enc_path, &passphrase, &secret_hex)?;
+            crypto::StorageBackend::EncryptedFile
+        }
+    } else {
+        backend
+    };
+
+    // Also revert the read-back in try_store_keychain — it's in-process and unreliable
     let npub = keys.public_key().to_bech32()?;
 
     // Write config with actual backend used
     let mut cfg = config::Config::default();
-    if matches!(backend, crypto::StorageBackend::EncryptedFile) {
+    if matches!(verified_backend, crypto::StorageBackend::EncryptedFile) {
         cfg.identity.storage = "file".to_string();
     }
     let content = toml::to_string_pretty(&cfg)?;
