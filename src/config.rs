@@ -63,3 +63,61 @@ pub fn load() -> Result<Config> {
         Ok(Config::default())
     }
 }
+
+/// Write config to config_dir/config.toml
+pub fn save(cfg: &Config) -> Result<PathBuf> {
+    let dir = config_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("config.toml");
+    let content = toml::to_string_pretty(cfg)?;
+    std::fs::write(&path, content)?;
+    Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Build a Config and serialise/deserialise it to/from a temp directory.
+    #[test]
+    fn test_config_creation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        let cfg = Config::default();
+        let content = toml::to_string_pretty(&cfg).expect("toml serialise");
+        std::fs::write(&config_path, &content).expect("write config");
+
+        // File must exist
+        assert!(config_path.exists(), "config.toml should be created");
+
+        // Must round-trip
+        let loaded: Config = toml::from_str(&std::fs::read_to_string(&config_path).unwrap())
+            .expect("toml parse");
+
+        // Relay URLs must contain all three defaults
+        assert!(loaded.relays.urls.contains(&"wss://nos.lol".to_string()));
+        assert!(loaded
+            .relays
+            .urls
+            .contains(&"wss://relay.damus.io".to_string()));
+        assert!(loaded
+            .relays
+            .urls
+            .contains(&"wss://relay.nostr.band".to_string()));
+
+        // Identity storage default
+        assert_eq!(loaded.identity.storage, "keychain");
+    }
+
+    #[test]
+    fn default_relay_urls_correct() {
+        let cfg = Config::default();
+        let urls = &cfg.relays.urls;
+        assert_eq!(urls.len(), 3);
+        assert!(urls.iter().any(|u| u == "wss://nos.lol"));
+        assert!(urls.iter().any(|u| u == "wss://relay.damus.io"));
+        assert!(urls.iter().any(|u| u == "wss://relay.nostr.band"));
+    }
+}

@@ -1,3 +1,6 @@
+// Allow dead code for Phase 0 stubs — will be used in Phase 1+
+#![allow(dead_code)]
+
 use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
