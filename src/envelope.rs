@@ -48,15 +48,18 @@ pub fn validate_message_size(msg: &str) -> Result<(), crate::error::MycelError> 
 /// Shared by all modules — do not duplicate.
 pub fn now_iso8601() -> String {
     use std::time::SystemTime;
-    let duration = SystemTime::now()
+    let secs = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    // Format as simplified ISO 8601
+        .unwrap_or_default()
+        .as_secs();
+    timestamp_to_iso8601(secs)
+}
+
+/// Convert unix timestamp (seconds) to ISO 8601 UTC string.
+pub fn timestamp_to_iso8601(secs: u64) -> String {
     let (days, rem) = (secs / 86400, secs % 86400);
     let (hours, rem) = (rem / 3600, rem % 3600);
     let (mins, secs) = (rem / 60, rem % 60);
-    // Days since 1970-01-01
     let (year, month, day) = days_to_ymd(days);
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{mins:02}:{secs:02}Z")
 }

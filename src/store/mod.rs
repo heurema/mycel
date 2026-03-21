@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS contacts (
     added_at    TEXT NOT NULL
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_alias_unique
+    ON contacts(LOWER(alias)) WHERE alias IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS sync_state (
     relay_url   TEXT PRIMARY KEY,
     last_sync   INTEGER NOT NULL DEFAULT 0

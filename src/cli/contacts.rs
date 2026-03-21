@@ -34,6 +34,18 @@ pub fn run_with_conn(conn: &Connection, action: ContactsAction) -> Result<()> {
     match action {
         ContactsAction::Add { address, alias } => {
             let pubkey_hex = resolve_npub_to_hex(&address)?;
+
+            // Check for alias collision before insert
+            if let Some(ref a) = alias
+                && let Some(existing) = store::get_contact_by_alias(conn, a)?
+                && existing.pubkey != pubkey_hex
+            {
+                anyhow::bail!(
+                    "alias '{}' already used by contact {}. Choose a different alias.",
+                    a, &existing.pubkey[..existing.pubkey.len().min(12)]
+                );
+            }
+
             let now = now_iso8601();
             let contact = store::ContactRow {
                 pubkey: pubkey_hex.clone(),

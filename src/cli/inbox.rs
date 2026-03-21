@@ -97,8 +97,9 @@ pub async fn run(json: bool, all: bool) -> Result<()> {
             "received"
         };
         let now = now_iso8601();
-        // Sanitize timestamp from untrusted source (strip ANSI/control chars)
-        let safe_ts = sanitize_for_terminal(&env.ts);
+        // Use outer Nostr event timestamp as canonical (not attacker-controlled env.ts)
+        let event_ts = event.created_at.as_secs();
+        let canonical_ts = crate::envelope::timestamp_to_iso8601(event_ts);
         let msg = store::MessageRow {
             nostr_id,
             direction: "in".to_string(),
@@ -107,7 +108,7 @@ pub async fn run(json: bool, all: bool) -> Result<()> {
             content: env.msg,
             delivery_status: delivery_status.to_string(),
             read_status: if delivery_status == "blocked" { "blocked".to_string() } else { "unread".to_string() },
-            created_at: safe_ts,
+            created_at: canonical_ts,
             received_at: now,
         };
         if store::insert_message(&conn, &msg)? && delivery_status != "blocked" {
@@ -235,9 +236,18 @@ pub fn sanitize_for_terminal(content: &str) -> String {
                         }
                     }
                 }
-                // DCS: ESC P ... ST  |  SS3: ESC O ...
-                Some(&'P') | Some(&'O') => {
-                    chars.next();
+                // SS3: ESC O <single char> — consume just one char after 'O'
+                Some(&'O') => {
+                    chars.next(); // consume 'O'
+                    if let Some(&next) = chars.peek()
+                        && next.is_ascii_alphabetic()
+                    {
+                        chars.next();
+                    }
+                }
+                // DCS: ESC P ... ST
+                Some(&'P') => {
+                    chars.next(); // consume 'P'
                     while let Some(&next) = chars.peek() {
                         chars.next();
                         if next == '\x1b' {
@@ -245,8 +255,6 @@ pub fn sanitize_for_terminal(content: &str) -> String {
                             break;
                         }
                         if next == '\x07' { break; }
-                        // SS3 sequences are single-char after ESC O
-                        if c == 'O' && next.is_ascii_alphabetic() { break; }
                     }
                 }
                 // Bare ESC or unknown — skip
