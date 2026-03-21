@@ -4,10 +4,11 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
+use crate::config::IdentityStorage;
+use crate::error::MycelError;
 use crate::{config, crypto, store};
 
 /// Test TCP connectivity to a relay URL (wss://host[:port]).
-/// Returns true if TCP handshake completes within 5 seconds.
 async fn check_relay(url: &str) -> bool {
     let host_port = extract_host_port(url);
     let Some((host, port)) = host_port else {
@@ -21,18 +22,15 @@ async fn check_relay(url: &str) -> bool {
 }
 
 fn extract_host_port(url: &str) -> Option<(String, u16)> {
-    // Strip wss:// or ws://
     let rest = url
         .strip_prefix("wss://")
         .or_else(|| url.strip_prefix("ws://"))?;
-    // Remove path
     let host_part = rest.split('/').next()?;
     if let Some(pos) = host_part.rfind(':') {
         let host = &host_part[..pos];
         let port: u16 = host_part[pos + 1..].parse().ok()?;
         Some((host.to_string(), port))
     } else {
-        // Default port for wss is 443
         let port = if url.starts_with("wss://") { 443 } else { 80 };
         Some((host_part.to_string(), port))
     }
@@ -55,10 +53,7 @@ pub async fn run_with_dirs(
 
     // AC8: refuse to overwrite existing key
     if crypto::is_initialized(&enc_path) {
-        anyhow::bail!(
-            "already initialized. Use `mycel id` to view your address. \
-             Delete ~/.config/mycel/ to start over (this will LOSE your key)."
-        );
+        return Err(MycelError::AlreadyInitialized.into());
     }
 
     // Create dirs first (no key material yet — safe partial state)
@@ -73,7 +68,10 @@ pub async fn run_with_dirs(
 
     // AC3: create SQLite database (before key — recoverable if fails)
     let db_path = data_dir.join("mycel.db");
-    let _conn = store::open(&db_path)?;
+    let db_path_owned = db_path.to_path_buf();
+    tokio::task::spawn_blocking(move || store::open(&db_path_owned).map(|_| ()))
+        .await
+        .map_err(|e| anyhow::anyhow!("db init task panicked: {e}"))??;
 
     // AC4: write default config.toml (before key — recoverable if fails)
     let config_path = cfg_dir.join("config.toml");
@@ -82,7 +80,6 @@ pub async fn run_with_dirs(
     let (keys, backend) = crypto::generate_and_store(&enc_path)?;
 
     // Verify persistence: spawn a subprocess to check keychain read-back.
-    // In-process keyring reads succeed from cache even when the entry doesn't persist.
     let verified_backend = if matches!(backend, crypto::StorageBackend::Keychain) {
         let verify_ok = std::process::Command::new(std::env::current_exe()?)
             .args(["id"])
@@ -95,8 +92,6 @@ pub async fn run_with_dirs(
         if verify_ok {
             backend
         } else {
-            // Keychain wrote OK in-process but doesn't persist across loads.
-            // Fall back to encrypted file.
             eprintln!("Warning: keychain did not persist key. Falling back to encrypted file.");
             let secret_hex = zeroize::Zeroizing::new(keys.secret_key().to_secret_hex());
             let passphrase = if let Ok(p) = std::env::var("MYCEL_KEY_PASSPHRASE") {
@@ -111,13 +106,12 @@ pub async fn run_with_dirs(
         backend
     };
 
-    // Also revert the read-back in try_store_keychain — it's in-process and unreliable
     let npub = keys.public_key().to_bech32()?;
 
     // Write config with actual backend used
     let mut cfg = config::Config::default();
     if matches!(verified_backend, crypto::StorageBackend::EncryptedFile) {
-        cfg.identity.storage = "file".to_string();
+        cfg.identity.storage = IdentityStorage::File;
     }
     let content = toml::to_string_pretty(&cfg)?;
     std::fs::write(&config_path, content)?;
@@ -167,13 +161,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_relay_connectivity() {
-        // We simply verify the function doesn't panic and returns a bool.
-        // In CI without network, all will be unreachable — that's fine.
         let result = check_relay("wss://nos.lol").await;
-        // result can be true or false depending on network; we just assert it's a bool
         let _ = result;
 
-        // Invalid URL returns false
         assert!(!check_relay("not-a-url").await);
         assert!(!check_relay("").await);
     }
@@ -184,7 +174,6 @@ mod tests {
         let db_path = dir.path().join("mycel.db");
         let conn = store::open(&db_path).expect("db open");
 
-        // Verify all expected tables exist
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .unwrap()
@@ -203,9 +192,7 @@ mod tests {
     async fn test_config_creation() {
         let dir = TempDir::new().unwrap();
         let cfg_dir = dir.path().join("config");
-        let _data_dir = dir.path().join("data");
 
-        // Directly write a config
         std::fs::create_dir_all(&cfg_dir).unwrap();
         let cfg = crate::config::Config::default();
         let content = toml::to_string_pretty(&cfg).unwrap();
@@ -224,7 +211,7 @@ mod tests {
             .relays
             .urls
             .contains(&"wss://relay.nostr.band".to_string()));
-        assert_eq!(loaded.identity.storage, "keychain");
+        assert_eq!(loaded.identity.storage, IdentityStorage::Keychain);
     }
 
     #[tokio::test]
@@ -235,17 +222,14 @@ mod tests {
         std::fs::create_dir_all(&cfg_dir).unwrap();
         unsafe { std::env::set_var("MYCEL_KEY_PASSPHRASE", "test-passphrase-ci"); }
 
-        // Create key.enc directly (bypasses keychain, ensures file-based detection)
         let enc_path = cfg_dir.join("key.enc");
         let keys = nostr_sdk::Keys::generate();
         let hex = keys.secret_key().to_secret_hex();
         crate::crypto::store_key_file(&enc_path, "test-passphrase-ci", &hex)
             .expect("store key file");
 
-        // is_initialized should detect the file
         assert!(crate::crypto::is_initialized(&enc_path));
 
-        // Init should refuse because key.enc exists
         let r = run_with_dirs(&cfg_dir, &data_dir).await;
         assert!(r.is_err(), "init should refuse when key already exists");
         let msg = r.unwrap_err().to_string();

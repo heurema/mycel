@@ -26,10 +26,16 @@ fn default_timeout_secs() -> u64 {
     10
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IdentityStorage {
+    Keychain,
+    File,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IdentityConfig {
-    /// "keychain" or "file"
-    pub storage: String,
+    pub storage: IdentityStorage,
 }
 
 impl Default for Config {
@@ -40,7 +46,7 @@ impl Default for Config {
                 timeout_secs: default_timeout_secs(),
             },
             identity: IdentityConfig {
-                storage: "keychain".to_string(),
+                storage: IdentityStorage::Keychain,
             },
         }
     }
@@ -114,7 +120,7 @@ mod tests {
             .contains(&"wss://relay.nostr.band".to_string()));
 
         // Identity storage default
-        assert_eq!(loaded.identity.storage, "keychain");
+        assert_eq!(loaded.identity.storage, IdentityStorage::Keychain);
     }
 
     #[test]
@@ -125,5 +131,20 @@ mod tests {
         assert!(urls.iter().any(|u| u == "wss://nos.lol"));
         assert!(urls.iter().any(|u| u == "wss://relay.damus.io"));
         assert!(urls.iter().any(|u| u == "wss://relay.nostr.band"));
+    }
+
+    #[test]
+    fn identity_storage_serde() {
+        let cfg = Config::default();
+        let content = toml::to_string_pretty(&cfg).unwrap();
+        assert!(content.contains("storage = \"keychain\""));
+
+        let mut cfg2 = Config::default();
+        cfg2.identity.storage = IdentityStorage::File;
+        let content2 = toml::to_string_pretty(&cfg2).unwrap();
+        assert!(content2.contains("storage = \"file\""));
+
+        let loaded: Config = toml::from_str(&content2).unwrap();
+        assert_eq!(loaded.identity.storage, IdentityStorage::File);
     }
 }

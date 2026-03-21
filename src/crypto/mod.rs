@@ -19,10 +19,19 @@ use nostr_sdk::Keys;
 use std::path::Path;
 use zeroize::Zeroizing;
 
+use crate::config::IdentityStorage;
+use crate::error::MycelError;
+
 const SERVICE: &str = "mycel";
 const ACCOUNT: &str = "mycel-private-key";
 const NONCE_LEN: usize = 12;
 const SALT_LEN: usize = 22; // SaltString base64 len (16 bytes raw)
+
+// Argon2id parameters — explicit, not default()
+const ARGON2_M_COST: u32 = 19456; // KiB (~19 MiB)
+const ARGON2_T_COST: u32 = 2;     // iterations
+const ARGON2_P_COST: u32 = 1;     // parallelism
+const ARGON2_OUTPUT_LEN: usize = 32;
 
 /// Attempt to store secret key hex in OS keychain.
 /// Returns Ok(true) on success, Ok(false) if keychain unavailable.
@@ -53,9 +62,16 @@ fn try_load_keychain() -> Result<Option<String>> {
     }
 }
 
+/// Build Argon2id hasher with explicit parameters.
+fn argon2_hasher() -> Result<Argon2<'static>> {
+    let params = argon2::Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(ARGON2_OUTPUT_LEN))
+        .map_err(|e| anyhow::anyhow!("argon2 params: {e}"))?;
+    Ok(Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params))
+}
+
 /// Derive 32-byte key from passphrase+salt using argon2id.
 fn derive_key(passphrase: &str, salt: &SaltString) -> Result<[u8; 32]> {
-    let argon2 = Argon2::default();
+    let argon2 = argon2_hasher()?;
     let hash = argon2
         .hash_password(passphrase.as_bytes(), salt)
         .map_err(|e| anyhow::anyhow!("argon2 error: {e}"))?;
@@ -151,8 +167,8 @@ pub enum StorageBackend {
 }
 
 /// Generate a new keypair, persist it, and return (Keys, StorageBackend).
-/// Errors if a key already exists in either store.
-pub fn generate_and_store(enc_path: &Path) -> Result<(Keys, StorageBackend)> {
+/// Caller must check `is_initialized()` first — this function does not enforce uniqueness.
+pub(crate) fn generate_and_store(enc_path: &Path) -> Result<(Keys, StorageBackend)> {
     let keys = Keys::generate();
     let secret_hex = Zeroizing::new(keys.secret_key().to_secret_hex());
 
@@ -178,7 +194,7 @@ pub fn generate_and_store(enc_path: &Path) -> Result<(Keys, StorageBackend)> {
 
 /// Generate and store using ONLY file backend (skip keychain).
 #[allow(dead_code)]
-pub fn generate_and_store_file(enc_path: &Path) -> Result<(Keys, StorageBackend)> {
+pub(crate) fn generate_and_store_file(enc_path: &Path) -> Result<(Keys, StorageBackend)> {
     let keys = Keys::generate();
     let secret_hex = Zeroizing::new(keys.secret_key().to_secret_hex());
     let passphrase = get_passphrase("Enter passphrase to protect your key: ")?;
@@ -186,29 +202,39 @@ pub fn generate_and_store_file(enc_path: &Path) -> Result<(Keys, StorageBackend)
     Ok((keys, StorageBackend::EncryptedFile))
 }
 
-/// Load existing keypair from storage. Returns Err if not initialized.
-pub fn load_keys(enc_path: &Path) -> Result<Keys> {
-    // Try keychain
-    if let Some(hex) = try_load_keychain()? {
-        let secret_hex = Zeroizing::new(hex);
-        let keys = Keys::parse(&secret_hex)
-            .map_err(|e| anyhow::anyhow!("invalid key from keychain: {e}"))?;
-        return Ok(keys);
+/// Load existing keypair from storage. Respects the configured storage backend.
+pub fn load_keys(enc_path: &Path, storage: IdentityStorage) -> Result<Keys> {
+    match storage {
+        IdentityStorage::Keychain => {
+            if let Some(hex) = try_load_keychain()? {
+                let secret_hex = Zeroizing::new(hex);
+                let keys = Keys::parse(&secret_hex)
+                    .map_err(|e| anyhow::anyhow!("invalid key from keychain: {e}"))?;
+                return Ok(keys);
+            }
+            // Keychain configured but key not found there — check file as fallback
+            if enc_path.exists() {
+                let passphrase = get_passphrase("Enter passphrase to unlock your key: ")?;
+                let hex = load_key_file(enc_path, &passphrase)
+                    .map_err(|e| anyhow::anyhow!("{e} — wrong passphrase or corrupted key file"))?;
+                let keys = Keys::parse(&hex)
+                    .map_err(|e| anyhow::anyhow!("invalid key from file: {e}"))?;
+                return Ok(keys);
+            }
+            Err(MycelError::NotInitialized.into())
+        }
+        IdentityStorage::File => {
+            if enc_path.exists() {
+                let passphrase = get_passphrase("Enter passphrase to unlock your key: ")?;
+                let hex = load_key_file(enc_path, &passphrase)
+                    .map_err(|e| anyhow::anyhow!("{e} — wrong passphrase or corrupted key file"))?;
+                let keys = Keys::parse(&hex)
+                    .map_err(|e| anyhow::anyhow!("invalid key from file: {e}"))?;
+                return Ok(keys);
+            }
+            Err(MycelError::NotInitialized.into())
+        }
     }
-
-    // Try encrypted file
-    if enc_path.exists() {
-        let passphrase = get_passphrase("Enter passphrase to unlock your key: ")?;
-        let hex = load_key_file(enc_path, &passphrase)
-            .map_err(|e| anyhow::anyhow!("{e} — wrong passphrase or corrupted key file"))?;
-        let keys = Keys::parse(&hex)
-            .map_err(|e| anyhow::anyhow!("invalid key from file: {e}"))?;
-        return Ok(keys);
-    }
-
-    Err(anyhow::anyhow!(
-        "not initialized — run `mycel init` first"
-    ))
 }
 
 /// Check whether a key is already stored (without decrypting).
@@ -268,5 +294,12 @@ mod tests {
 
         // Secret is zeroized on drop — we just verify the type
         drop(loaded);
+    }
+
+    #[test]
+    fn test_argon2_hasher_builds() {
+        // Verify explicit params construct without error
+        let hasher = argon2_hasher();
+        assert!(hasher.is_ok(), "argon2 hasher should build with explicit params");
     }
 }

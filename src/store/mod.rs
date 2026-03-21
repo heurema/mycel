@@ -1,6 +1,9 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use crate::types::{DeliveryStatus, Direction, ReadStatus, TrustTier};
 
 pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS messages (
@@ -45,28 +48,77 @@ pub fn open(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// A stored message row
+// ---------------------------------------------------------------------------
+// Async wrapper — spawn_blocking for all rusqlite calls in async contexts
+// ---------------------------------------------------------------------------
+
+/// Async handle to a SQLite connection. All operations run on the blocking
+/// thread pool via `tokio::task::spawn_blocking`.
+#[derive(Clone)]
+pub struct Db {
+    conn: Arc<Mutex<Connection>>,
+}
+
+impl Db {
+    pub fn new(conn: Connection) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+        }
+    }
+
+    pub fn open(path: &Path) -> Result<Self> {
+        Ok(Self::new(open(path)?))
+    }
+
+    /// Run a synchronous closure on the blocking thread pool with access
+    /// to the underlying `Connection`.
+    pub async fn run<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&Connection) -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+            f(&conn)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("db task panicked: {e}"))?
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row types
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone)]
 pub struct MessageRow {
     pub nostr_id: String,
-    pub direction: String,
+    pub direction: Direction,
     pub sender: String,
     pub recipient: String,
     pub content: String,
-    pub delivery_status: String,
-    pub read_status: String,
+    pub delivery_status: DeliveryStatus,
+    pub read_status: ReadStatus,
     pub created_at: String,
     pub received_at: String,
+    /// Sender alias from contacts (populated via JOIN on read, not stored)
+    pub sender_alias: Option<String>,
 }
 
-/// A stored contact row
 #[derive(Debug, Clone)]
 pub struct ContactRow {
     pub pubkey: String,
     pub alias: Option<String>,
-    pub trust_tier: String,
+    pub trust_tier: TrustTier,
     pub added_at: String,
 }
+
+// ---------------------------------------------------------------------------
+// Message operations
+// ---------------------------------------------------------------------------
 
 /// Insert a message; returns Ok(true) if inserted, Ok(false) if duplicate (INSERT OR IGNORE)
 pub fn insert_message(conn: &Connection, msg: &MessageRow) -> Result<bool> {
@@ -90,22 +142,25 @@ pub fn insert_message(conn: &Connection, msg: &MessageRow) -> Result<bool> {
 }
 
 /// Get messages filtered by direction and optional trust tier list.
-/// `trust_tiers` is a list of accepted sender trust tiers; pass &[] to get all.
+/// Pass `&[]` for trust_tiers to get all messages.
 pub fn get_messages(
     conn: &Connection,
-    direction: &str,
-    trust_tiers: &[&str],
+    direction: Direction,
+    trust_tiers: &[TrustTier],
 ) -> Result<Vec<MessageRow>> {
     if trust_tiers.is_empty() {
-        // No trust filter: return all messages for that direction
         let mut stmt = conn.prepare(
-            "SELECT nostr_id, direction, sender, recipient, content, delivery_status, read_status, created_at, received_at
-             FROM messages WHERE direction = ?1 ORDER BY created_at ASC",
+            "SELECT m.nostr_id, m.direction, m.sender, m.recipient, m.content,
+                    m.delivery_status, m.read_status, m.created_at, m.received_at,
+                    c.alias
+             FROM messages m
+             LEFT JOIN contacts c ON c.pubkey = m.sender
+             WHERE m.direction = ?1
+             ORDER BY m.created_at ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![direction], map_message_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     } else {
-        // With trust filter: join messages with contacts
         let placeholders: String = trust_tiers
             .iter()
             .enumerate()
@@ -114,7 +169,8 @@ pub fn get_messages(
             .join(", ");
         let sql = format!(
             "SELECT m.nostr_id, m.direction, m.sender, m.recipient, m.content,
-                    m.delivery_status, m.read_status, m.created_at, m.received_at
+                    m.delivery_status, m.read_status, m.created_at, m.received_at,
+                    c.alias
              FROM messages m
              LEFT JOIN contacts c ON c.pubkey = m.sender
              WHERE m.direction = ?1
@@ -124,9 +180,9 @@ pub fn get_messages(
         );
         let mut stmt = conn.prepare(&sql)?;
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(direction.to_string())];
+            vec![Box::new(direction)];
         for t in trust_tiers {
-            params_vec.push(Box::new(t.to_string()));
+            params_vec.push(Box::new(*t));
         }
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             params_vec.iter().map(|b| b.as_ref()).collect();
@@ -146,8 +202,13 @@ fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
         read_status: row.get(6)?,
         created_at: row.get(7)?,
         received_at: row.get(8)?,
+        sender_alias: row.get(9)?,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Contact operations
+// ---------------------------------------------------------------------------
 
 /// Insert a contact; INSERT OR REPLACE to allow updates
 pub fn insert_contact(conn: &Connection, contact: &ContactRow) -> Result<()> {
@@ -199,7 +260,7 @@ pub fn list_contacts(conn: &Connection) -> Result<Vec<ContactRow>> {
 }
 
 /// Update trust tier for a contact by pubkey
-pub fn update_trust_tier(conn: &Connection, pubkey: &str, trust_tier: &str) -> Result<bool> {
+pub fn update_trust_tier(conn: &Connection, pubkey: &str, trust_tier: TrustTier) -> Result<bool> {
     let rows = conn.execute(
         "UPDATE contacts SET trust_tier = ?1 WHERE pubkey = ?2",
         rusqlite::params![trust_tier, pubkey],
@@ -215,6 +276,10 @@ fn map_contact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContactRow> {
         added_at: row.get(3)?,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Sync state
+// ---------------------------------------------------------------------------
 
 /// Get sync cursor for a relay URL (0 if not set)
 pub fn get_sync_cursor(conn: &Connection, relay_url: &str) -> Result<u64> {
@@ -271,14 +336,15 @@ mod tests {
         let conn = open_mem();
         let msg = MessageRow {
             nostr_id: "abc123".to_string(),
-            direction: "in".to_string(),
+            direction: Direction::In,
             sender: "sender_hex".to_string(),
             recipient: "recipient_hex".to_string(),
             content: "hello".to_string(),
-            delivery_status: "received".to_string(),
-            read_status: "unread".to_string(),
+            delivery_status: DeliveryStatus::Received,
+            read_status: ReadStatus::Unread,
             created_at: "2026-03-20T00:00:00Z".to_string(),
             received_at: "2026-03-20T00:00:01Z".to_string(),
+            sender_alias: None,
         };
         let inserted = insert_message(&conn, &msg).unwrap();
         assert!(inserted, "first insert should succeed");
@@ -293,23 +359,24 @@ mod tests {
         let conn = open_mem();
         let msg = MessageRow {
             nostr_id: "id1".to_string(),
-            direction: "in".to_string(),
+            direction: Direction::In,
             sender: "spubkey".to_string(),
             recipient: "rpubkey".to_string(),
             content: "test msg".to_string(),
-            delivery_status: "received".to_string(),
-            read_status: "unread".to_string(),
+            delivery_status: DeliveryStatus::Received,
+            read_status: ReadStatus::Unread,
             created_at: "2026-03-20T00:00:00Z".to_string(),
             received_at: "2026-03-20T00:00:01Z".to_string(),
+            sender_alias: None,
         };
         insert_message(&conn, &msg).unwrap();
 
-        let msgs = get_messages(&conn, "in", &[]).unwrap();
+        let msgs = get_messages(&conn, Direction::In, &[]).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "test msg");
 
         // No 'out' messages
-        let out = get_messages(&conn, "out", &[]).unwrap();
+        let out = get_messages(&conn, Direction::Out, &[]).unwrap();
         assert!(out.is_empty());
     }
 
@@ -321,7 +388,7 @@ mod tests {
         let contact = ContactRow {
             pubkey: "known_pubkey".to_string(),
             alias: Some("alice".to_string()),
-            trust_tier: "known".to_string(),
+            trust_tier: TrustTier::Known,
             added_at: "2026-03-20T00:00:00Z".to_string(),
         };
         insert_contact(&conn, &contact).unwrap();
@@ -329,43 +396,45 @@ mod tests {
         // Insert message from known sender
         let msg_known = MessageRow {
             nostr_id: "id_known".to_string(),
-            direction: "in".to_string(),
+            direction: Direction::In,
             sender: "known_pubkey".to_string(),
             recipient: "me".to_string(),
             content: "from known".to_string(),
-            delivery_status: "received".to_string(),
-            read_status: "unread".to_string(),
+            delivery_status: DeliveryStatus::Received,
+            read_status: ReadStatus::Unread,
             created_at: "2026-03-20T00:00:00Z".to_string(),
             received_at: "2026-03-20T00:00:01Z".to_string(),
+            sender_alias: None,
         };
         insert_message(&conn, &msg_known).unwrap();
 
         // Insert message from unknown sender (no contact record)
         let msg_unknown = MessageRow {
             nostr_id: "id_unknown".to_string(),
-            direction: "in".to_string(),
+            direction: Direction::In,
             sender: "unknown_pubkey".to_string(),
             recipient: "me".to_string(),
             content: "from unknown".to_string(),
-            delivery_status: "received".to_string(),
-            read_status: "unread".to_string(),
+            delivery_status: DeliveryStatus::Received,
+            read_status: ReadStatus::Unread,
             created_at: "2026-03-20T00:00:00Z".to_string(),
             received_at: "2026-03-20T00:00:01Z".to_string(),
+            sender_alias: None,
         };
         insert_message(&conn, &msg_unknown).unwrap();
 
         // Filter: known only
-        let known_msgs = get_messages(&conn, "in", &["known"]).unwrap();
+        let known_msgs = get_messages(&conn, Direction::In, &[TrustTier::Known]).unwrap();
         assert_eq!(known_msgs.len(), 1);
         assert_eq!(known_msgs[0].sender, "known_pubkey");
 
         // Filter: unknown only
-        let unknown_msgs = get_messages(&conn, "in", &["unknown"]).unwrap();
+        let unknown_msgs = get_messages(&conn, Direction::In, &[TrustTier::Unknown]).unwrap();
         assert_eq!(unknown_msgs.len(), 1);
         assert_eq!(unknown_msgs[0].sender, "unknown_pubkey");
 
         // Both
-        let all_msgs = get_messages(&conn, "in", &["known", "unknown"]).unwrap();
+        let all_msgs = get_messages(&conn, Direction::In, &[TrustTier::Known, TrustTier::Unknown]).unwrap();
         assert_eq!(all_msgs.len(), 2);
     }
 
@@ -375,7 +444,7 @@ mod tests {
         let contact = ContactRow {
             pubkey: "pubkey_hex".to_string(),
             alias: Some("alice".to_string()),
-            trust_tier: "known".to_string(),
+            trust_tier: TrustTier::Known,
             added_at: "2026-03-20T00:00:00Z".to_string(),
         };
         insert_contact(&conn, &contact).unwrap();
@@ -384,7 +453,7 @@ mod tests {
         assert!(loaded.is_some());
         let c = loaded.unwrap();
         assert_eq!(c.alias, Some("alice".to_string()));
-        assert_eq!(c.trust_tier, "known");
+        assert_eq!(c.trust_tier, TrustTier::Known);
     }
 
     #[test]
@@ -393,7 +462,7 @@ mod tests {
         let contact = ContactRow {
             pubkey: "pk_hex".to_string(),
             alias: Some("Bob".to_string()),
-            trust_tier: "known".to_string(),
+            trust_tier: TrustTier::Known,
             added_at: "2026-03-20T00:00:00Z".to_string(),
         };
         insert_contact(&conn, &contact).unwrap();
@@ -412,7 +481,7 @@ mod tests {
         let contact = ContactRow {
             pubkey: "mypubkey".to_string(),
             alias: None,
-            trust_tier: "unknown".to_string(),
+            trust_tier: TrustTier::Unknown,
             added_at: "2026-03-20T00:00:00Z".to_string(),
         };
         insert_contact(&conn, &contact).unwrap();
@@ -430,7 +499,7 @@ mod tests {
             let contact = ContactRow {
                 pubkey: format!("pk_{i}"),
                 alias: Some(format!("alias_{i}")),
-                trust_tier: "known".to_string(),
+                trust_tier: TrustTier::Known,
                 added_at: format!("2026-03-20T00:0{i}:00Z"),
             };
             insert_contact(&conn, &contact).unwrap();
@@ -445,19 +514,19 @@ mod tests {
         let contact = ContactRow {
             pubkey: "pk_test".to_string(),
             alias: Some("test".to_string()),
-            trust_tier: "known".to_string(),
+            trust_tier: TrustTier::Known,
             added_at: "2026-03-20T00:00:00Z".to_string(),
         };
         insert_contact(&conn, &contact).unwrap();
 
-        let updated = update_trust_tier(&conn, "pk_test", "blocked").unwrap();
+        let updated = update_trust_tier(&conn, "pk_test", TrustTier::Blocked).unwrap();
         assert!(updated);
 
         let c = get_contact_by_pubkey(&conn, "pk_test").unwrap().unwrap();
-        assert_eq!(c.trust_tier, "blocked");
+        assert_eq!(c.trust_tier, TrustTier::Blocked);
 
         // Non-existent key returns false
-        let not_found = update_trust_tier(&conn, "nonexistent", "blocked").unwrap();
+        let not_found = update_trust_tier(&conn, "nonexistent", TrustTier::Blocked).unwrap();
         assert!(!not_found);
     }
 

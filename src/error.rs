@@ -1,28 +1,24 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-#[allow(dead_code)]
 pub enum MycelError {
     #[error("not initialized — run `mycel init` first")]
     NotInitialized,
 
-    #[error("key not found or cannot be unlocked")]
-    KeyError(#[source] anyhow::Error),
+    #[error("already initialized — use `mycel id` to view your address")]
+    AlreadyInitialized,
 
     #[error("message too large ({size} bytes, max {max})")]
     MessageTooLarge { size: usize, max: usize },
 
+    #[error("message cannot be empty")]
+    EmptyMessage,
+
     #[error("no relays reachable")]
     NoRelays,
 
-    #[error("contact not found: {0}")]
-    ContactNotFound(String),
-
-    #[error("sender blocked: {0}")]
-    SenderBlocked(String),
-
-    #[error("database error")]
-    Database(#[from] rusqlite::Error),
+    #[error("alias already in use: '{alias}' (by {pubkey})")]
+    AliasCollision { alias: String, pubkey: String },
 }
 
 /// Max message payload size (C7)
