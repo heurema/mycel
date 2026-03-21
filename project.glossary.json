@@ -1,59 +1,111 @@
 {
-  "terms": [
+  "version": "1.0",
+  "canonicalTerms": [
     {
       "term": "mycel",
       "definition": "The project — encrypted async mailbox for AI CLI agents. From 'mycelium' (fungal network).",
-      "context": "CLI command name and project identity"
+      "source": "project.glossary.json (existing)"
     },
     {
       "term": "agent",
       "definition": "An AI CLI tool instance (Claude Code, Codex CLI, Gemini CLI) running in a terminal session.",
-      "context": "The primary actor that sends and receives messages"
+      "source": "project.glossary.json (existing)"
     },
     {
       "term": "address",
-      "definition": "User's public key encoded as a shareable string. Derived from secp256k1 keypair.",
-      "context": "User-facing identity. Internally npub (bech32), but UX hides Nostr jargon"
+      "definition": "User's public key encoded as a shareable string. Derived from secp256k1 keypair. Internally npub (bech32), but UX hides Nostr jargon.",
+      "source": "project.glossary.json (existing)"
     },
     {
       "term": "contact",
       "definition": "A known agent/user address with alias and trust tier. Stored locally in SQLite.",
-      "context": "Allowlist management"
+      "source": "project.glossary.json (existing)"
     },
     {
       "term": "relay",
       "definition": "A Nostr relay server that stores and forwards encrypted message envelopes. Public, independent, replaceable.",
-      "context": "Transport infrastructure — like a public mailbox that can't read your letters"
+      "source": "project.glossary.json (existing)"
     },
     {
       "term": "envelope",
-      "definition": "mycel's wire format: JSON with version, id, from, to, message, timestamp. Carried inside encrypted Nostr events.",
-      "context": "Application-level message structure"
+      "definition": "mycel's wire format: JSON with version, from, to, message, timestamp. Carried inside encrypted Nostr events.",
+      "source": "project.glossary.json (existing)"
     },
     {
       "term": "Gift Wrap",
       "definition": "NIP-59 three-layer encryption: Rumor (content) → Seal (signed, encrypted) → Gift Wrap (ephemeral key, routable). Hides sender identity from relays.",
-      "context": "Privacy mechanism"
+      "source": "project.glossary.json (existing)"
     },
     {
       "term": "trust tier",
       "definition": "Classification of message sender: KNOWN (show in inbox), UNKNOWN (quarantine), BLOCKED (drop).",
-      "context": "Safety model"
+      "source": "project.glossary.json (existing)"
     },
     {
       "term": "inbox",
       "definition": "Local SQLite table of received messages. Populated by `mycel inbox` command which fetches from relays.",
-      "context": "Local storage"
+      "source": "project.glossary.json (existing)"
     },
     {
       "term": "sync cursor",
-      "definition": "Per-relay Unix timestamp of last successful fetch. Used in `since` filter to avoid re-downloading old messages.",
-      "context": "Incremental sync mechanism"
+      "definition": "Per-relay Unix timestamp of last successful fetch. Used in `since` filter to avoid re-downloading old messages. Stored in sync_state table.",
+      "source": "project.glossary.json (existing)"
     },
     {
       "term": "sync-on-command",
       "definition": "v0.1 architecture: each CLI command connects to relays, does work, disconnects. No background daemon.",
-      "context": "Design pattern — like git push/pull"
+      "source": "project.glossary.json (existing)"
+    },
+    {
+      "term": "Direction",
+      "definition": "Enum (src/types.rs): In | Out. Records whether a message was received (In) or sent (Out). Stored as text 'in'/'out' in SQLite.",
+      "source": "src/types.rs"
+    },
+    {
+      "term": "DeliveryStatus",
+      "definition": "Enum (src/types.rs): Pending | Received | Delivered | Failed | Blocked. Tracks delivery lifecycle. Outbound: Delivered/Failed; inbound: Received/Blocked.",
+      "source": "src/types.rs"
+    },
+    {
+      "term": "ReadStatus",
+      "definition": "Enum (src/types.rs): Unread | Read | Blocked. Tracks whether a received message has been read. Blocked when sender's trust tier is Blocked.",
+      "source": "src/types.rs"
+    },
+    {
+      "term": "IdentityStorage",
+      "definition": "Enum (src/config.rs): Keychain | File. Config setting controlling where the private key is stored at rest.",
+      "source": "src/config.rs"
+    },
+    {
+      "term": "Db",
+      "definition": "Struct (src/store/mod.rs): async wrapper around rusqlite Connection. Uses Arc<Mutex<Connection>> + tokio::task::spawn_blocking for all DB operations in async contexts.",
+      "source": "src/store/mod.rs"
+    },
+    {
+      "term": "MycelError",
+      "definition": "Typed error enum (src/error.rs) using thiserror. Variants: NotInitialized, AlreadyInitialized, MessageTooLarge, EmptyMessage, NoRelays, AliasCollision.",
+      "source": "src/error.rs"
     }
-  ]
+  ],
+  "aliases": {
+    "npub": "address",
+    "bech32 address": "address",
+    "allowlist": "contact",
+    "Nostr relay": "relay",
+    "wire format": "envelope",
+    "mycel envelope": "envelope",
+    "NIP-59": "Gift Wrap",
+    "gift wrap": "Gift Wrap",
+    "quarantine": "trust tier",
+    "trust model": "trust tier",
+    "last_sync": "sync cursor",
+    "since cursor": "sync cursor",
+    "message direction": "Direction",
+    "delivery lifecycle": "DeliveryStatus",
+    "read state": "ReadStatus",
+    "key storage backend": "IdentityStorage",
+    "async db": "Db",
+    "spawn_blocking wrapper": "Db",
+    "domain errors": "MycelError"
+  }
 }
