@@ -4,6 +4,8 @@ mod id;
 mod inbox;
 mod init;
 mod send;
+mod status;
+mod watch;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -36,6 +38,9 @@ enum Command {
         /// Show quarantined messages from unknown senders
         #[arg(long)]
         all: bool,
+        /// Read from local DB only (no relay fetch)
+        #[arg(long)]
+        local: bool,
     },
     /// Manage contacts (allowlist)
     Contacts {
@@ -44,6 +49,18 @@ enum Command {
     },
     /// Check relay health, key status, connectivity
     Doctor,
+    /// Watch inbox for new messages (foreground, runs in tmux pane)
+    Watch {
+        /// Poll interval in seconds
+        #[arg(long, default_value = "30")]
+        interval: Option<u64>,
+    },
+    /// Check if watch is running
+    Status {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl Cli {
@@ -52,9 +69,11 @@ impl Cli {
             Command::Init => init::run().await,
             Command::Id => id::run().await,
             Command::Send { recipient, message } => send::run(&recipient, &message).await,
-            Command::Inbox { json, all } => inbox::run(json, all).await,
+            Command::Inbox { json, all, local } => inbox::run(json, all, local).await,
             Command::Contacts { action } => contacts::run(action).await,
             Command::Doctor => doctor::run().await,
+            Command::Watch { interval } => watch::run(interval).await,
+            Command::Status { json } => status::run(json),
         }
     }
 }

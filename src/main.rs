@@ -9,6 +9,7 @@ mod envelope;
 mod error;
 mod nostr;
 mod store;
+mod sync;
 mod types;
 
 use cli::Cli;
