@@ -17,7 +17,7 @@ pub async fn run(interval: Option<u64>) -> Result<()> {
     let relay_urls = cfg.relays.urls;
     let timeout = Duration::from_secs(cfg.relays.timeout_secs);
 
-    // 2. Acquire singleton lock
+    // 2. Acquire singleton lock (atomic, O_EXCL)
     let state_dir = config::data_dir()?;
     let lock_path = state_dir.join("watch.lock");
     let state_path = state_dir.join("watch.state.json");
@@ -42,6 +42,9 @@ pub async fn run(interval: Option<u64>) -> Result<()> {
     let mut total_received: u64 = 0;
     let started_at = crate::envelope::now_iso8601();
 
+    // Write provisional state BEFORE first sync (so `status` sees "starting")
+    write_state(&state_path, &started_at, 0, poll_secs, None, "starting");
+
     // 6. Initial sync
     match sync::sync_once(&keys, &client, &db, &relay_urls, timeout).await {
         Ok(report) => {
@@ -51,14 +54,15 @@ pub async fn run(interval: Option<u64>) -> Result<()> {
                 notify_new(report.new_messages);
             }
             eprintln!("Initial sync: {} event(s), {} new", report.fetched, report.new_messages);
+            write_state(&state_path, &started_at, total_received, poll_secs, None, "ok");
         }
         Err(e) => {
-            eprintln!("Initial sync error: {e}");
+            let err_msg = format!("{e}");
+            eprintln!("Initial sync error: {err_msg}");
             consecutive_errors += 1;
+            write_state(&state_path, &started_at, 0, poll_secs, Some(&err_msg), "error");
         }
     }
-
-    write_state(&state_path, &started_at, total_received, poll_secs, None);
 
     // 7. Poll loop
     loop {
@@ -84,7 +88,7 @@ pub async fn run(interval: Option<u64>) -> Result<()> {
                 if report.new_messages > 0 {
                     notify_new(report.new_messages);
                 }
-                write_state(&state_path, &started_at, total_received, poll_secs, None);
+                write_state(&state_path, &started_at, total_received, poll_secs, None, "ok");
             }
             Err(e) => {
                 consecutive_errors += 1;
@@ -93,7 +97,7 @@ pub async fn run(interval: Option<u64>) -> Result<()> {
                 if consecutive_errors <= 3 {
                     eprintln!("Sync error: {err_msg} (retrying in {sleep_secs}s)");
                 }
-                write_state(&state_path, &started_at, total_received, poll_secs, Some(&err_msg));
+                write_state(&state_path, &started_at, total_received, poll_secs, Some(&err_msg), "error");
             }
         }
     }
@@ -107,33 +111,64 @@ pub async fn run(interval: Option<u64>) -> Result<()> {
 }
 
 fn notify_new(count: u64) {
-    // Terminal bell + summary
     eprint!("\x07"); // BEL
     eprintln!("{count} new message(s)");
 }
 
+/// Acquire singleton lock using O_EXCL (atomic create-or-fail).
+/// If lock exists and PID is alive → error. If stale → remove and retry.
 fn acquire_lock(lock_path: &PathBuf) -> Result<()> {
-    if lock_path.exists() {
-        let content = std::fs::read_to_string(lock_path).unwrap_or_default();
-        if let Ok(pid) = content.trim().parse::<u32>() {
-            // Check if process is alive
-            if is_process_alive(pid) {
-                anyhow::bail!(
-                    "another mycel watch is running (PID {pid}). \
-                     Kill it first or remove {}", lock_path.display()
-                );
-            }
+    use std::io::Write;
+
+    let pid_str = format!("{}", std::process::id());
+
+    // First attempt: atomic create
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true) // O_EXCL — fails if file exists
+        .open(lock_path)
+    {
+        Ok(mut f) => {
+            f.write_all(pid_str.as_bytes())?;
+            return Ok(());
         }
-        // Stale lock — remove it
-        let _ = std::fs::remove_file(lock_path);
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Lock file exists — check if PID is alive
+        }
+        Err(e) => return Err(e.into()),
     }
-    std::fs::write(lock_path, format!("{}", std::process::id()))?;
+
+    // Lock exists — check if holder is alive
+    let content = std::fs::read_to_string(lock_path).unwrap_or_default();
+    if let Ok(pid) = content.trim().parse::<u32>()
+        && is_process_alive(pid)
+    {
+        anyhow::bail!(
+            "another mycel watch is running (PID {pid}). \
+             Kill it first or remove {}", lock_path.display()
+        );
+    }
+
+    // Stale lock — remove and retry atomically
+    let _ = std::fs::remove_file(lock_path);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(lock_path)
+        .map_err(|_| anyhow::anyhow!("could not acquire watch lock after removing stale file"))?;
+    std::io::Write::write_all(&mut f, pid_str.as_bytes())?;
     Ok(())
 }
 
+#[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {
-    // kill(pid, 0) checks existence without sending a signal
     unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn is_process_alive(_pid: u32) -> bool {
+    // On non-Unix, assume stale (safe: worst case we replace a dead watcher)
+    false
 }
 
 fn write_state(
@@ -142,10 +177,10 @@ fn write_state(
     messages_received: u64,
     poll_interval_secs: u64,
     last_error: Option<&str>,
+    status: &str,
 ) {
     let now = crate::envelope::now_iso8601();
     let pid = std::process::id();
-    let status = if last_error.is_some() { "error" } else { "ok" };
     let error_field = match last_error {
         Some(e) => format!(",\"last_error\":\"{}\"", e.replace('"', "\\\"").replace('\n', " ")),
         None => String::new(),

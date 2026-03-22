@@ -64,10 +64,11 @@ pub async fn sync_once(
         db.run(move |conn| {
             let mut count = 0u64;
             for msg in &unwrapped {
-                if let Some(row) = parse_and_validate(conn, &my_hex_owned, msg)? {
-                    if store::insert_message(conn, &row)? && row.delivery_status != DeliveryStatus::Blocked {
-                        count += 1;
-                    }
+                if let Some(row) = parse_and_validate(conn, &my_hex_owned, msg)?
+                    && store::insert_message(conn, &row)?
+                    && row.delivery_status != DeliveryStatus::Blocked
+                {
+                    count += 1;
                 }
             }
             Ok(count)

@@ -15,11 +15,10 @@ pub fn run(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Check if PID is alive
     let pid_alive = if lock_path.exists() {
         let content = std::fs::read_to_string(&lock_path).unwrap_or_default();
         content.trim().parse::<u32>()
-            .map(|pid| unsafe { libc::kill(pid as i32, 0) == 0 })
+            .map(is_process_alive)
             .unwrap_or(false)
     } else {
         false
@@ -34,7 +33,6 @@ pub fn run(json: bool) -> Result<()> {
         }
     } else if pid_alive && state_path.exists() {
         let state = std::fs::read_to_string(&state_path).unwrap_or_default();
-        // Parse and display human-readable
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&state) {
             let pid = v["pid"].as_u64().unwrap_or(0);
             let status = v["status"].as_str().unwrap_or("unknown");
@@ -60,4 +58,14 @@ pub fn run(json: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn is_process_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn is_process_alive(_pid: u32) -> bool {
+    false
 }
