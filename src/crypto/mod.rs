@@ -283,11 +283,30 @@ fn to_secret_string(plaintext: Vec<u8>) -> Result<Zeroizing<String>> {
 // Passphrase
 // ---------------------------------------------------------------------------
 
+/// Passphrase account in keychain (separate from secret key account).
+const PASSPHRASE_ACCOUNT: &str = "mycel-passphrase";
+
 fn get_passphrase(prompt: &str) -> Result<Zeroizing<String>> {
+    // 1. Env var (CI/headless override)
     if let Ok(p) = std::env::var("MYCEL_KEY_PASSPHRASE") {
         return Ok(Zeroizing::new(p));
     }
+
+    // 2. Keychain-cached passphrase (non-interactive agent path)
+    if let Ok(entry) = keyring::Entry::new(SERVICE, PASSPHRASE_ACCOUNT) {
+        if let Ok(p) = entry.get_password() {
+            return Ok(Zeroizing::new(p));
+        }
+    }
+
+    // 3. Interactive TTY prompt (human path)
     let p = rpassword::prompt_password(prompt)?;
+
+    // Cache passphrase in keychain for future non-interactive use
+    if let Ok(entry) = keyring::Entry::new(SERVICE, PASSPHRASE_ACCOUNT) {
+        let _ = entry.set_password(&p); // best-effort, don't fail if keychain unavailable
+    }
+
     Ok(Zeroizing::new(p))
 }
 
