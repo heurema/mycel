@@ -25,10 +25,13 @@ enum Command {
     Id,
     /// Send an encrypted message to a contact
     Send {
-        /// Contact alias or npub address
+        /// Contact alias or npub address (use 'self' for send-to-self via local transport)
         recipient: String,
         /// Message text
         message: String,
+        /// Deliver directly to recipient's local SQLite DB (no relay required)
+        #[arg(long)]
+        local: bool,
     },
     /// Fetch and display incoming messages
     Inbox {
@@ -68,7 +71,7 @@ impl Cli {
         match self.command {
             Command::Init => init::run().await,
             Command::Id => id::run().await,
-            Command::Send { recipient, message } => send::run(&recipient, &message).await,
+            Command::Send { recipient, message, local } => send::run(&recipient, &message, local).await,
             Command::Inbox { json, all, local } => inbox::run(json, all, local).await,
             Command::Contacts { action } => contacts::run(action).await,
             Command::Doctor => doctor::run().await,

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 const DEFAULT_RELAYS: &[&str] = &[
@@ -9,10 +10,32 @@ const DEFAULT_RELAYS: &[&str] = &[
     "wss://relay.nostr.band",
 ];
 
+/// A local agent entry in [local.agents] config section.
+/// Inline table format: `alias = { pubkey = "...", db = "path/to/mycel.db" }`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalAgentEntry {
+    /// Recipient's secp256k1 public key (hex).
+    pub pubkey: String,
+    /// Path to recipient's mycel.db (~ is expanded to home directory).
+    pub db: String,
+}
+
+/// Local transport configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LocalConfig {
+    /// Named agents reachable via local transport.
+    /// Key is the alias used on the command line (e.g. `codex`).
+    #[serde(default)]
+    pub agents: HashMap<String, LocalAgentEntry>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub relays: RelayConfig,
     pub identity: IdentityConfig,
+    /// Optional local transport section.
+    #[serde(default)]
+    pub local: LocalConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,8 +71,26 @@ impl Default for Config {
             identity: IdentityConfig {
                 storage: IdentityStorage::Keychain,
             },
+            local: LocalConfig::default(),
         }
     }
+}
+
+/// Expand a leading `~` in `path` to the user's home directory.
+/// Returns the original string if no `~` prefix or if home cannot be resolved.
+pub fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs_home() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+fn dirs_home() -> Option<PathBuf> {
+    ProjectDirs::from("run", "mycel", "mycel")
+        .map(|_| ()) // ensure ProjectDirs is available
+        .and_then(|_| std::env::var("HOME").ok().map(PathBuf::from))
 }
 
 /// ~/.config/mycel/

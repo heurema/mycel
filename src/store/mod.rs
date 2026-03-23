@@ -258,6 +258,39 @@ pub fn insert_message_v2(conn: &Connection, msg: &MessageRow, meta: &crate::type
     Ok(rows > 0)
 }
 
+/// Insert a local-transport message using msg_id as the dedup key (INSERT OR IGNORE).
+/// Returns Ok(true) if inserted, Ok(false) if a row with the same msg_id already exists.
+/// nostr_id is set to msg_id for local messages (no Nostr event ID).
+pub fn insert_message_local(conn: &Connection, msg: &MessageRow, meta: &crate::types::MessageMeta) -> Result<bool> {
+    let msg_id = meta.msg_id.as_deref().unwrap_or("");
+    // Use msg_id as nostr_id placeholder for local messages so the PK is populated.
+    let nostr_id = if msg.nostr_id.is_empty() { msg_id } else { &msg.nostr_id };
+    let rows = conn.execute(
+        "INSERT OR IGNORE INTO messages
+            (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
+             created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+         WHERE NOT EXISTS (SELECT 1 FROM messages WHERE msg_id = ?10 AND msg_id IS NOT NULL AND msg_id != '')",
+        rusqlite::params![
+            nostr_id,
+            msg.direction,
+            msg.sender,
+            msg.recipient,
+            msg.content,
+            msg.delivery_status,
+            msg.read_status,
+            msg.created_at,
+            msg.received_at,
+            meta.msg_id.as_deref(),
+            meta.thread_id.as_deref(),
+            meta.reply_to.as_deref(),
+            meta.transport.as_deref().unwrap_or("local"),
+            meta.transport_msg_id.as_deref(),
+        ],
+    )?;
+    Ok(rows > 0)
+}
+
 /// Get messages filtered by direction and optional trust tier list.
 /// Pass `&[]` for trust_tiers to get all messages.
 pub fn get_messages(
