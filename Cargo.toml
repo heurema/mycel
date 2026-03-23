@@ -38,6 +38,9 @@ argon2 = "0.5"
 aes-gcm = "0.10"
 zeroize = { version = "1.8", features = ["derive"] }
 
+# IDs
+uuid = { version = "1", features = ["v7"] }
+
 # Utils
 directories = "6.0"
 rpassword = "7.4"

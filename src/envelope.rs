@@ -1,33 +1,110 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::MAX_MESSAGE_SIZE;
+use crate::types::Part;
 
-/// mycel wire format v1
-///
+/// mycel wire format v2 (backward-compatible with v1 via EnvelopeWire adapter).
 /// Carried inside Nostr event content (NIP-44 encrypted).
-/// ID = Nostr event id (outer Gift Wrap). No separate envelope ID.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "EnvelopeWire")]
 pub struct Envelope {
-    /// Wire format version
-    pub v: u8,
-    /// Sender public key (hex)
-    pub from: String,
-    /// Recipient public key (hex)
-    pub to: String,
-    /// Message text (max 8KB per C7)
-    pub msg: String,
-    /// ISO 8601 timestamp
-    pub ts: String,
+    pub v: u8,                           // wire format version
+    pub msg_id: String,                  // opaque message ID (UUIDv7 string)
+    pub from: String,                    // sender public key (hex)
+    pub to: String,                      // recipient public key (hex)
+    pub ts: String,                      // ISO 8601 timestamp
+    pub thread_id: Option<String>,       // thread ID (optional)
+    pub reply_to: Option<String>,        // reply-to msg_id (optional)
+    pub role: Option<String>,            // sender role (optional)
+    pub parts: Vec<Part>,                // message parts (v2)
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub msg: String,                     // legacy v1 text field
+}
+
+/// Intermediate for deserializing both v1 and v2 wire format.
+#[derive(Deserialize)]
+struct EnvelopeWire {
+    #[serde(default)]
+    v: u8,
+    #[serde(default)]
+    msg_id: String,
+    #[serde(default)]
+    from: String,
+    #[serde(default)]
+    to: String,
+    #[serde(default)]
+    ts: String,
+    #[serde(default)]
+    thread_id: Option<String>,
+    #[serde(default)]
+    reply_to: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    parts: Vec<Part>,
+    /// v1 legacy text field
+    #[serde(default)]
+    msg: String,
+}
+
+impl From<EnvelopeWire> for Envelope {
+    fn from(wire: EnvelopeWire) -> Self {
+        // v1 compat: if parts is empty, build a TextPart from msg
+        let parts = if wire.parts.is_empty() && !wire.msg.is_empty() {
+            vec![Part::TextPart { text: wire.msg.clone() }]
+        } else {
+            wire.parts
+        };
+        Envelope {
+            v: wire.v,
+            msg_id: wire.msg_id,
+            from: wire.from,
+            to: wire.to,
+            ts: wire.ts,
+            thread_id: wire.thread_id,
+            reply_to: wire.reply_to,
+            role: wire.role,
+            parts,
+            msg: wire.msg,
+        }
+    }
 }
 
 impl Envelope {
+    /// Create a new v2 Envelope. msg_id must be supplied by the caller.
+    pub fn new_v2(
+        msg_id: String,
+        from: String,
+        to: String,
+        parts: Vec<Part>,
+    ) -> Self {
+        Self {
+            v: 2,
+            msg_id,
+            from,
+            to,
+            ts: now_iso8601(),
+            thread_id: None,
+            reply_to: None,
+            role: None,
+            parts,
+            msg: String::new(),
+        }
+    }
+
+    /// Create a v1-compatible Envelope (legacy; used by send command until migrated).
     pub fn new(from: String, to: String, msg: String) -> Self {
         Self {
             v: 1,
+            msg_id: String::new(),
             from,
             to,
-            msg,
             ts: now_iso8601(),
+            thread_id: None,
+            reply_to: None,
+            role: None,
+            parts: vec![Part::TextPart { text: msg.clone() }],
+            msg,
         }
     }
 }
@@ -99,7 +176,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn envelope_v2_roundtrip() {
+        let env = Envelope::new_v2(
+            "01950000-0000-7000-8000-000000000001".to_string(),
+            "aabbcc".to_string(),
+            "ddeeff".to_string(),
+            vec![Part::TextPart { text: "hello v2".to_string() }],
+        );
+        let json = serde_json::to_string(&env).unwrap();
+        let parsed: Envelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.v, 2);
+        assert_eq!(parsed.msg_id, "01950000-0000-7000-8000-000000000001");
+        assert_eq!(parsed.from, "aabbcc");
+        assert_eq!(parsed.parts.len(), 1);
+        match &parsed.parts[0] {
+            Part::TextPart { text } => assert_eq!(text, "hello v2"),
+            _ => panic!("expected TextPart"),
+        }
+        // Verify RFC wire format: type discriminator is "text", not "text_part"
+        assert!(json.contains(r#""type":"text""#), "Part type must serialize as 'text' per RFC");
+    }
+
+    #[test]
+    fn v1_compat_deserialize() {
+        // v1 wire format: no msg_id, no parts, has msg field
+        let v1_json = r#"{"v":1,"from":"aabbcc","to":"ddeeff","msg":"hello v1","ts":"2026-03-23T00:00:00Z"}"#;
+        let env: Envelope = serde_json::from_str(v1_json).unwrap();
+        assert_eq!(env.v, 1);
+        assert_eq!(env.msg, "hello v1");
+        assert_eq!(env.parts.len(), 1);
+        match &env.parts[0] {
+            Part::TextPart { text } => assert_eq!(text, "hello v1"),
+            _ => panic!("expected TextPart from v1 msg"),
+        }
+    }
+
+    #[test]
     fn envelope_roundtrip() {
+        // v1-style constructor still works
         let env = Envelope::new(
             "aabbcc".to_string(),
             "ddeeff".to_string(),

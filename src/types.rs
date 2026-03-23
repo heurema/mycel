@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
@@ -86,6 +87,29 @@ str_enum! {
         Read => "read",
         Blocked => "blocked",
     }
+}
+
+/// A single content part of an Envelope v2 message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+pub enum Part {
+    /// Plain text content part.
+    #[serde(rename = "text")]
+    TextPart { text: String },
+    /// Binary/file content part (skeleton for v0.4).
+    #[serde(rename = "data")]
+    DataPart { mime_type: String, data: String },
+}
+
+/// Role of the agent or user sending the message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRole {
+    User,         // human user
+    Agent,        // general AI agent
+    Coordinator,  // orchestration/routing agent
+    Reviewer,     // code/output review agent
+    Implementer,  // code/task implementation agent
 }
 
 #[cfg(test)]
