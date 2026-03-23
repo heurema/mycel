@@ -23,7 +23,8 @@ pub async fn run(recipient: &str, message: &str, local: bool) -> Result<()> {
     let keys = crypto::load_keys(&enc_path, cfg.identity.storage)?;
     let sender_hex = keys.public_key().to_hex();
 
-    if local {
+    // Auto-route: "self" always uses local transport (no relay needed)
+    if local || recipient == "self" {
         run_local(recipient, message, &cfg, &keys, &sender_hex).await
     } else {
         run_nostr(recipient, message, &cfg, &keys, &sender_hex).await

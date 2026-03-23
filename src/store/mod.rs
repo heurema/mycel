@@ -91,13 +91,18 @@ pub fn open(path: &Path) -> Result<Connection> {
     // For existing v1 databases user_version=1; for brand-new databases user_version=0.
     let existing_version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
-    // Apply the full v2 schema (all CREATE TABLE IF NOT EXISTS are idempotent).
+    // For databases that existed before v2, run the migration FIRST to add new columns.
+    // This must happen before SCHEMA because SCHEMA includes CREATE INDEX on v2 columns.
+    if existing_version > 0 && existing_version < 2 {
+        migrate_v1_to_v2(&conn)?;
+    }
+
+    // Apply the full v2 schema (all CREATE TABLE/INDEX IF NOT EXISTS are idempotent).
     conn.execute_batch(SCHEMA)?;
 
-    // For databases that existed before v2, run the migration to add new columns and backfill.
-    // For fresh databases (version=0), SCHEMA already created the v2 layout so migration is
-    // still safe (duplicate-column ALTERs are caught and skipped).
-    if existing_version < 2 {
+    // For fresh databases (version=0), SCHEMA already created the v2 layout.
+    // Migration is still safe (duplicate-column ALTERs are caught and skipped).
+    if existing_version == 0 {
         migrate_v1_to_v2(&conn)?;
     }
 
@@ -999,5 +1004,68 @@ mod tests {
             .query_row("SELECT msg_id FROM messages WHERE nostr_id = 'nid_v2'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(stored_msg_id, "019d1a2b-test");
+    }
+
+    #[test]
+    fn open_migrates_v1_db_via_file() {
+        // E2E migration test: create a v1 DB on disk, then open() it.
+        // This is the exact path that failed in production: SCHEMA's CREATE INDEX
+        // on msg_id ran before ALTER TABLE ADD COLUMN msg_id.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("mycel.db");
+
+        // Step 1: Create a v1 database with real data
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+            conn.execute_batch("
+                CREATE TABLE IF NOT EXISTS messages (
+                    nostr_id         TEXT PRIMARY KEY,
+                    direction        TEXT NOT NULL,
+                    sender           TEXT NOT NULL,
+                    recipient        TEXT NOT NULL,
+                    content          TEXT NOT NULL,
+                    delivery_status  TEXT NOT NULL DEFAULT 'pending',
+                    read_status      TEXT NOT NULL DEFAULT 'unread',
+                    created_at       TEXT NOT NULL,
+                    received_at      TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS contacts (
+                    pubkey      TEXT PRIMARY KEY,
+                    alias       TEXT,
+                    trust_tier  TEXT NOT NULL DEFAULT 'unknown',
+                    added_at    TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS sync_state (
+                    relay_url   TEXT PRIMARY KEY,
+                    last_sync   INTEGER NOT NULL DEFAULT 0
+                );
+                PRAGMA user_version = 1;
+            ").unwrap();
+            conn.execute(
+                "INSERT INTO messages (nostr_id, direction, sender, recipient, content, \
+                 delivery_status, read_status, created_at, received_at) \
+                 VALUES ('ev_abc', 'in', 'sender_hex', 'recip_hex', 'old msg', \
+                         'received', 'unread', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z')",
+                [],
+            ).unwrap();
+        }
+
+        // Step 2: open() must migrate without error
+        let conn = open(&db_path).expect("open() must migrate v1 DB without error");
+
+        // Step 3: Verify migration happened
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 2, "user_version must be 2 after migration");
+
+        let msg_id: String = conn
+            .query_row("SELECT msg_id FROM messages WHERE nostr_id = 'ev_abc'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(msg_id, "legacy:ev_abc", "v1 msg must get legacy: prefix");
+
+        let transport: String = conn
+            .query_row("SELECT transport FROM messages WHERE nostr_id = 'ev_abc'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(transport, "nostr", "v1 messages must get transport=nostr");
     }
 }
