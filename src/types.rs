@@ -120,6 +120,7 @@ pub enum Part {
 /// Role of the agent or user sending the message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // Used in Envelope.role deserialization and thread message routing
 pub enum AgentRole {
     User,         // human user
     Agent,        // general AI agent

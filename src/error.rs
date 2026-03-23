@@ -27,6 +27,7 @@ pub enum MycelError {
     ThreadMemberLimitExceeded,
 
     #[error("invalid thread id: {thread_id}")]
+    #[allow(dead_code)] // Used when thread log validates thread_id format
     InvalidThreadId { thread_id: String },
 }
 

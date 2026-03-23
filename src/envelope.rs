@@ -144,6 +144,7 @@ impl Envelope {
     /// - `Err(_)` if parsing `from` pubkey or `sig` hex fails
     ///
     /// Callers MUST skip this when `transport == "nostr"` (NIP-59 provides authenticity).
+    #[allow(dead_code)] // Used by inbox/sync when local transport verification lands
     pub fn verify_sig(&self) -> anyhow::Result<bool> {
         let sig_hex = match &self.sig {
             Some(s) => s,
@@ -229,6 +230,7 @@ fn canonical_json_sorted(val: &serde_json::Value) -> String {
 ///
 /// Used to extract `mycel-msg-id` and `mycel-thread-id` from unwrapped rumors
 /// for event_id → msg_id mapping and reply_to resolution.
+#[allow(dead_code)] // Used when sync.rs processes NIP-17 thread messages
 pub fn extract_mycel_tag(tags: &[nostr_sdk::Tag], tag_name: &str) -> Option<String> {
     for tag in tags {
         let content = tag.as_slice();

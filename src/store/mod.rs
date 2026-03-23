@@ -492,6 +492,7 @@ pub fn insert_thread(conn: &Connection, thread: &ThreadRow) -> Result<bool> {
 }
 
 /// Update thread members JSON column and updated_at timestamp.
+#[allow(dead_code)] // Thread member management CLI lands in v0.3
 pub fn update_thread_members(conn: &Connection, thread_id: &str, members_json: &str, updated_at: &str) -> Result<bool> {
     let rows = conn.execute(
         "UPDATE threads SET members = ?1, updated_at = ?2 WHERE thread_id = ?3",
@@ -502,6 +503,7 @@ pub fn update_thread_members(conn: &Connection, thread_id: &str, members_json: &
 
 /// Add a member to the thread's JSON members array.
 /// Deserializes current members, appends new member if not already present, re-serializes.
+#[allow(dead_code)] // Thread member management CLI lands in v0.3
 pub fn add_thread_member(conn: &Connection, thread_id: &str, pubkey: &str, joined_at: &str) -> Result<bool> {
     use crate::types::ThreadMember;
 
@@ -530,6 +532,7 @@ pub fn add_thread_member(conn: &Connection, thread_id: &str, pubkey: &str, joine
 }
 
 /// Remove a member from the thread's JSON members array.
+#[allow(dead_code)] // Thread member management CLI lands in v0.3
 pub fn remove_thread_member(conn: &Connection, thread_id: &str, pubkey: &str) -> Result<bool> {
     use crate::types::ThreadMember;
 
