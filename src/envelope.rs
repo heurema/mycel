@@ -1,3 +1,10 @@
+use nostr_sdk::nostr::hashes::sha256::Hash as Sha256Hash;
+use nostr_sdk::nostr::hashes::Hash;
+use nostr_sdk::nostr::secp256k1::schnorr::Signature;
+use nostr_sdk::nostr::secp256k1::{Message, XOnlyPublicKey, SECP256K1};
+use nostr_sdk::Keys;
+use nostr_sdk::SecretKey;
+use nostr_sdk::PublicKey as NostrPublicKey;
 use serde::{Deserialize, Serialize};
 
 use crate::error::MAX_MESSAGE_SIZE;
@@ -19,6 +26,10 @@ pub struct Envelope {
     pub parts: Vec<Part>,                // message parts (v2)
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub msg: String,                     // legacy v1 text field
+    /// Schnorr signature over canonical envelope hash (local transport authenticity).
+    /// Omitted when None (e.g. Nostr transport where NIP-59 provides authenticity).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sig: Option<String>,
 }
 
 /// Intermediate for deserializing both v1 and v2 wire format.
@@ -45,6 +56,8 @@ struct EnvelopeWire {
     /// v1 legacy text field
     #[serde(default)]
     msg: String,
+    #[serde(default)]
+    sig: Option<String>,
 }
 
 impl From<EnvelopeWire> for Envelope {
@@ -66,6 +79,7 @@ impl From<EnvelopeWire> for Envelope {
             role: wire.role,
             parts,
             msg: wire.msg,
+            sig: wire.sig,
         }
     }
 }
@@ -89,6 +103,7 @@ impl Envelope {
             role: None,
             parts,
             msg: String::new(),
+            sig: None,
         }
     }
 
@@ -105,7 +120,105 @@ impl Envelope {
             role: None,
             parts: vec![Part::TextPart { text: msg.clone() }],
             msg,
+            sig: None,
         }
+    }
+
+    /// Sign this envelope with the given secret key (Schnorr over canonical hash).
+    /// Sets the `sig` field with the hex-encoded signature.
+    pub fn sign(&mut self, secret_key: &SecretKey) -> anyhow::Result<()> {
+        let hash = canonical_envelope_hash(self);
+        let msg = Message::from_digest(hash);
+        let keys = Keys::new(secret_key.clone());
+        let sig: Signature = keys.sign_schnorr(&msg);
+        self.sig = Some(format!("{sig:x}"));
+        Ok(())
+    }
+
+    /// Verify the Schnorr signature in the `sig` field against the sender's pubkey (`from`).
+    ///
+    /// Returns:
+    /// - `Ok(false)` if `sig` is absent
+    /// - `Ok(true)` if signature is valid
+    /// - `Ok(false)` if signature is invalid
+    /// - `Err(_)` if parsing `from` pubkey or `sig` hex fails
+    ///
+    /// Callers MUST skip this when `transport == "nostr"` (NIP-59 provides authenticity).
+    pub fn verify_sig(&self) -> anyhow::Result<bool> {
+        let sig_hex = match &self.sig {
+            Some(s) => s,
+            None => return Ok(false),
+        };
+
+        // Parse sender pubkey from `from` field
+        let nostr_pk = NostrPublicKey::from_hex(&self.from)
+            .map_err(|e| anyhow::anyhow!("invalid from pubkey: {e}"))?;
+        let xonly = XOnlyPublicKey::from_slice(nostr_pk.as_bytes())
+            .map_err(|e| anyhow::anyhow!("xonly pubkey parse: {e}"))?;
+
+        // Recompute canonical hash (without sig field)
+        let hash = canonical_envelope_hash(self);
+        let msg = Message::from_digest(hash);
+
+        // Parse signature
+        let sig = sig_hex.parse::<Signature>()
+            .map_err(|e| anyhow::anyhow!("invalid sig hex: {e}"))?;
+
+        match SECP256K1.verify_schnorr(&sig, &msg, &xonly) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+}
+
+/// Compute the canonical SHA-256 hash of an envelope for signing/verification.
+///
+/// Algorithm:
+/// 1. Serialize envelope to a JSON `Value`
+/// 2. Remove the `sig` field (not part of the signed content)
+/// 3. Re-serialize with keys sorted alphabetically (deterministic)
+/// 4. SHA-256 hash of the canonical bytes
+pub fn canonical_envelope_hash(envelope: &Envelope) -> [u8; 32] {
+    // Serialize to JSON Value
+    let mut val = serde_json::to_value(envelope)
+        .expect("Envelope always serializes to valid JSON");
+
+    // Remove sig field from the object
+    if let serde_json::Value::Object(ref mut map) = val {
+        map.remove("sig");
+    }
+
+    // Produce canonical JSON with sorted keys
+    let canonical = canonical_json_sorted(&val);
+
+    // SHA-256
+    let hash = Sha256Hash::hash(canonical.as_bytes());
+    *hash.as_byte_array()
+}
+
+/// Serialize a serde_json Value to JSON with keys sorted alphabetically at every level.
+fn canonical_json_sorted(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            let inner: Vec<String> = keys
+                .into_iter()
+                .map(|k| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(k).unwrap(),
+                        canonical_json_sorted(&map[k])
+                    )
+                })
+                .collect();
+            format!("{{{}}}", inner.join(","))
+        }
+        serde_json::Value::Array(arr) => {
+            let inner: Vec<String> = arr.iter().map(canonical_json_sorted).collect();
+            format!("[{}]", inner.join(","))
+        }
+        other => serde_json::to_string(other).unwrap(),
     }
 }
 
@@ -244,5 +357,52 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("8193"), "error should show byte count");
         assert!(msg.contains("8192"), "error should show max");
+    }
+
+    #[test]
+    fn sig_roundtrip() {
+        use nostr_sdk::Keys;
+
+        // 1. Generate test keys
+        let keys = Keys::generate();
+        let sk = keys.secret_key().clone();
+        let pk_hex = keys.public_key().to_hex();
+
+        // 2. Create a v2 Envelope
+        let mut env = Envelope::new_v2(
+            "01950000-0000-7000-8000-000000000002".to_string(),
+            pk_hex.clone(),
+            "ddeeff".to_string(),
+            vec![Part::TextPart { text: "sig test".to_string() }],
+        );
+
+        // 3. Sign the envelope
+        env.sign(&sk).expect("sign should succeed");
+        assert!(env.sig.is_some(), "sig field must be set after sign()");
+
+        // 4. Verify: valid sig returns Ok(true)
+        assert_eq!(env.verify_sig().unwrap(), true, "valid sig should verify");
+
+        // 5. Tamper with a field and re-verify: should return Ok(false) or Err
+        let original_ts = env.ts.clone();
+        env.ts = "2099-01-01T00:00:00Z".to_string();
+        let tampered_result = env.verify_sig();
+        match tampered_result {
+            Ok(false) => {}  // expected: invalid sig
+            Err(_) => {}     // also acceptable: parsing error
+            Ok(true) => panic!("tampered envelope must not verify"),
+        }
+
+        // 6. Restore and serialize/deserialize: sig field must survive roundtrip
+        env.ts = original_ts;
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(json.contains("\"sig\""), "sig field must appear in JSON");
+        let parsed: Envelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.sig, env.sig, "sig must survive JSON roundtrip");
+        assert_eq!(parsed.verify_sig().unwrap(), true, "deserialized envelope must verify");
+
+        // 7. Transport-aware: caller determines transport context (not an envelope field).
+        // When caller knows message arrived via Nostr, it should skip verify_sig().
+        // Transport is NOT stored in Envelope per RFC — it's caller context.
     }
 }
