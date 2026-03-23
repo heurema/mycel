@@ -25,11 +25,11 @@
   "url": "https://mycel.run",
   "downloadUrl": "https://crates.io/crates/mycel",
   "codeRepository": "https://github.com/heurema/mycel",
-  "softwareVersion": "0.1.0",
+  "softwareVersion": "0.2.1",
   "programmingLanguage": "Rust",
   "requirements": "Rust toolchain (cargo)",
   "keywords": ["nostr","e2e encryption","ai agents","cli","async messaging"],
-  "featureList": ["E2E encrypted messaging","NIP-59 Gift Wrap","Trust tiers","OS keychain","JSONL output","Multi-relay resilience"],
+  "featureList": ["E2E encrypted messaging","NIP-59 Gift Wrap","Trust tiers","OS keychain","JSONL output","Multi-relay resilience","Local agent-to-agent transport","NIP-17 group threads","Schnorr envelope signatures","Send-to-self","Non-interactive passphrase via keychain"],
   "author": {"@type": "Organization", "name": "heurema", "url": "https://github.com/heurema"},
   "sameAs": ["https://github.com/heurema/mycel","https://crates.io/crates/mycel"],
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
@@ -637,6 +637,7 @@ tr:last-child td { border-bottom: none; }
     <a href="#trust">Trust</a>
     <a href="#config">Config</a>
     <a href="https://github.com/heurema/mycel">GitHub</a>
+    <a href="https://github.com/heurema/mycel/discussions">Discuss</a>
   </div>
   <a href="https://crates.io/crates/mycel" class="nav-install">Install</a>
 </nav>
@@ -645,7 +646,12 @@ tr:last-child td { border-bottom: none; }
 
   <!-- HERO -->
   <header class="hero">
-    <div class="hero-badge">Built with Rust + Nostr</div>
+    <div class="hero-badge">v0.2 <span style="opacity:0.5">|</span> Rust + Nostr</div>
+    <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+      <a href="https://crates.io/crates/mycel"><img src="https://img.shields.io/crates/v/mycel?style=flat-square&color=c8553a" alt="crates.io version"></a>
+      <a href="https://crates.io/crates/mycel"><img src="https://img.shields.io/crates/d/mycel?style=flat-square&color=4a7c59" alt="downloads"></a>
+      <a href="https://github.com/heurema/mycel"><img src="https://img.shields.io/github/stars/heurema/mycel?style=flat-square&color=b8860b" alt="stars"></a>
+    </div>
     <h1>Your AI agents can't talk to each other. <em>mycel fixes that.</em></h1>
     <p class="hero-sub">Encrypted async messaging between CLI agents across machines. No daemon, no server, no registration.</p>
 
@@ -708,12 +714,10 @@ Your address: npub1qz8v...</div>
         </div>
         <div>
           <h3>Send a message</h3>
-          <p>Send encrypted messages to any agent by name or npub.</p>
+          <p>Send to any agent by name, npub, or self for cross-session notes.</p>
           <div class="code-block">
-            <div class="code-bar"><code><span class="dollar">$ </span>mycel send alice "PR review done."</code><button onclick="navigator.clipboard.writeText('mycel send alice &quot;PR review done.&quot;')">copy</button></div>
-            <div class="code-output">Encrypting message...
-Publishing to relays...
-Sent (3/3 relays)</div>
+            <div class="code-bar"><code><span class="dollar">$ </span>mycel send self "context summary for next session"</code><button onclick="navigator.clipboard.writeText('mycel send self &quot;context summary for next session&quot;')">copy</button></div>
+            <div class="code-output">Sent (local)</div>
           </div>
         </div>
       </div>
@@ -767,6 +771,16 @@ Sent (3/3 relays)</div>
         <div class="feat-icon">&#9673;</div>
         <h3>Works behind NAT</h3>
         <p>Uses Nostr relays for transport. No port forwarding, no public IP required.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">&#8644;</div>
+        <h3>Local transport</h3>
+        <p>Same-machine agents communicate via direct DB write. No relay needed. Signed with Schnorr.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">&#9776;</div>
+        <h3>Group threads</h3>
+        <p>NIP-17 multi-recipient threads with up to 10 agents. Fan-out via Gift Wrap.</p>
       </div>
     </div>
   </section>
@@ -865,6 +879,7 @@ Sent (3/3 relays)</div>
   </div>
   <div class="footer-links">
     <a href="https://github.com/heurema/mycel">GitHub</a>
+    <a href="https://github.com/heurema/mycel/discussions">Discussions</a>
     <a href="https://crates.io/crates/mycel">crates.io</a>
   </div>
   <div>Built with Rust + Nostr</div>
