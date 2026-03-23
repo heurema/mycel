@@ -6,7 +6,7 @@ use nostr_sdk::prelude::*;
 use std::time::Duration;
 
 use crate::types::{DeliveryStatus, Direction, ReadStatus, TrustTier};
-use crate::{envelope, error::SYNC_OVERLAP_SECS, nostr as mycel_nostr, store};
+use crate::{envelope, error::{MAX_EVENTS_PER_SYNC, SYNC_OVERLAP_SECS}, nostr as mycel_nostr, store};
 
 /// Result of a single sync cycle.
 #[derive(Debug, Clone)]
@@ -40,9 +40,19 @@ pub async fn sync_once(
     };
     let since = min_cursor.saturating_sub(SYNC_OVERLAP_SECS);
 
-    // 2. Fetch Gift Wraps (async)
-    let events = mycel_nostr::fetch_gift_wraps(client, relay_urls, &my_pubkey, since, timeout).await?;
+    // 2. Fetch Gift Wraps (async), cap to MAX_EVENTS_PER_SYNC
+    let mut events = mycel_nostr::fetch_gift_wraps(client, relay_urls, &my_pubkey, since, timeout).await?;
     let fetched = events.len();
+    if events.len() > MAX_EVENTS_PER_SYNC {
+        tracing::warn!(
+            "relay returned {} events, capping to {}",
+            events.len(),
+            MAX_EVENTS_PER_SYNC,
+        );
+        // Keep the oldest events so sync cursor advances predictably
+        events.sort_by_key(|e| e.created_at);
+        events.truncate(MAX_EVENTS_PER_SYNC);
+    }
 
     // 3. Unwrap (async — NIP-59 decrypt)
     let mut unwrapped = Vec::new();
@@ -64,11 +74,14 @@ pub async fn sync_once(
         db.run(move |conn| {
             let mut count = 0u64;
             for msg in &unwrapped {
-                if let Some(row) = parse_and_validate(conn, &my_hex_owned, msg)?
-                    && store::insert_message(conn, &row)?
-                    && row.delivery_status != DeliveryStatus::Blocked
-                {
-                    count += 1;
+                if let Some(row) = parse_and_validate(conn, &my_hex_owned, msg)? {
+                    // Skip storage entirely for blocked senders
+                    if row.delivery_status == DeliveryStatus::Blocked {
+                        continue;
+                    }
+                    if store::insert_message(conn, &row)? {
+                        count += 1;
+                    }
                 }
             }
             Ok(count)

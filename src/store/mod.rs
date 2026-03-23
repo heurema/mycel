@@ -3,6 +3,9 @@ use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use crate::types::{DeliveryStatus, Direction, ReadStatus, TrustTier};
 
 pub const SCHEMA: &str = "
@@ -45,6 +48,13 @@ pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
     conn.execute_batch(SCHEMA)?;
+
+    // Restrict DB file to owner-only access (0o600)
+    #[cfg(unix)]
+    if path.exists() {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
     Ok(conn)
 }
 

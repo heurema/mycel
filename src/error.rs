@@ -25,4 +25,7 @@ pub enum MycelError {
 pub const MAX_MESSAGE_SIZE: usize = 8192;
 
 /// Sync cursor overlap window in seconds (C2)
-pub const SYNC_OVERLAP_SECS: u64 = 120;
+pub const SYNC_OVERLAP_SECS: u64 = 300;
+
+/// Max events to process per sync cycle (relay spam protection)
+pub const MAX_EVENTS_PER_SYNC: usize = 1000;

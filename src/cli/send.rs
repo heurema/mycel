@@ -74,6 +74,7 @@ pub async fn run(recipient: &str, message: &str) -> Result<()> {
     client.disconnect().await;
 
     if ok_count == 0 {
+        eprintln!("Error: message not delivered — 0/{total} relays accepted the event");
         return Err(MycelError::NoRelays.into());
     } else if failed > 0 {
         println!("Sent ({ok_count}/{total} relays, {failed} failed)");
