@@ -18,7 +18,12 @@ CREATE TABLE IF NOT EXISTS messages (
     delivery_status  TEXT NOT NULL DEFAULT 'pending',
     read_status      TEXT NOT NULL DEFAULT 'unread',
     created_at       TEXT NOT NULL,
-    received_at      TEXT NOT NULL
+    received_at      TEXT NOT NULL,
+    msg_id           TEXT,
+    thread_id        TEXT,
+    reply_to         TEXT,
+    transport        TEXT NOT NULL DEFAULT 'nostr',
+    transport_msg_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS contacts (
@@ -41,13 +46,60 @@ CREATE TABLE IF NOT EXISTS relays (
     enabled     INTEGER NOT NULL DEFAULT 1
 );
 
-PRAGMA user_version = 1;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id);
+CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id);
+
+CREATE TABLE IF NOT EXISTS threads (
+    thread_id   TEXT PRIMARY KEY,
+    subject     TEXT,
+    members     TEXT NOT NULL DEFAULT '[]',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+PRAGMA user_version = 2;
 ";
+
+/// Migration script to upgrade a user_version=1 database to user_version=2.
+/// Adds new columns, backfills legacy rows, creates indexes and threads table.
+/// This is run inside open() when user_version < 2.
+const MIGRATION_V1_TO_V2: &[&str] = &[
+    "ALTER TABLE messages ADD COLUMN msg_id TEXT",
+    "ALTER TABLE messages ADD COLUMN thread_id TEXT",
+    "ALTER TABLE messages ADD COLUMN reply_to TEXT",
+    "ALTER TABLE messages ADD COLUMN transport TEXT NOT NULL DEFAULT 'nostr'",
+    "ALTER TABLE messages ADD COLUMN transport_msg_id TEXT",
+    "UPDATE messages SET msg_id = 'legacy:' || nostr_id WHERE msg_id IS NULL",
+    "UPDATE messages SET transport_msg_id = nostr_id WHERE transport_msg_id IS NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id)",
+    "CREATE TABLE IF NOT EXISTS threads (
+        thread_id   TEXT PRIMARY KEY,
+        subject     TEXT,
+        members     TEXT NOT NULL DEFAULT '[]',
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL
+    )",
+    "PRAGMA user_version = 2",
+];
 
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+
+    // Read user_version before applying schema so we know whether to run migration.
+    // For existing v1 databases user_version=1; for brand-new databases user_version=0.
+    let existing_version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+    // Apply the full v2 schema (all CREATE TABLE IF NOT EXISTS are idempotent).
     conn.execute_batch(SCHEMA)?;
+
+    // For databases that existed before v2, run the migration to add new columns and backfill.
+    // For fresh databases (version=0), SCHEMA already created the v2 layout so migration is
+    // still safe (duplicate-column ALTERs are caught and skipped).
+    if existing_version < 2 {
+        migrate_v1_to_v2(&conn)?;
+    }
 
     // Restrict DB file to owner-only access (0o600)
     #[cfg(unix)]
@@ -56,6 +108,27 @@ pub fn open(path: &Path) -> Result<Connection> {
     }
 
     Ok(conn)
+}
+
+/// Applies the v1 → v2 schema migration.
+/// Idempotent: each step uses ALTER TABLE (harmless if column already exists via SQLite
+/// "duplicate column" error, which we ignore) or IF NOT EXISTS clauses.
+fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
+    for stmt in MIGRATION_V1_TO_V2 {
+        // ALTER TABLE ADD COLUMN fails if column already exists; treat that as a no-op.
+        match conn.execute_batch(stmt) {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("duplicate column name") {
+                    // Column already exists — idempotent, skip
+                } else {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -134,8 +207,9 @@ pub struct ContactRow {
 pub fn insert_message(conn: &Connection, msg: &MessageRow) -> Result<bool> {
     let rows = conn.execute(
         "INSERT OR IGNORE INTO messages
-            (nostr_id, direction, sender, recipient, content, delivery_status, read_status, created_at, received_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
+             created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         rusqlite::params![
             msg.nostr_id,
             msg.direction,
@@ -146,6 +220,39 @@ pub fn insert_message(conn: &Connection, msg: &MessageRow) -> Result<bool> {
             msg.read_status,
             msg.created_at,
             msg.received_at,
+            None::<&str>,   // msg_id: caller may backfill via insert_message_v2
+            None::<&str>,   // thread_id
+            None::<&str>,   // reply_to
+            "nostr",        // transport: default for v1-compat inserts
+            None::<&str>,   // transport_msg_id
+        ],
+    )?;
+    Ok(rows > 0)
+}
+
+/// Insert a message with full v2 metadata fields.
+/// Returns Ok(true) if inserted, Ok(false) if duplicate (INSERT OR IGNORE on nostr_id).
+pub fn insert_message_v2(conn: &Connection, msg: &MessageRow, meta: &crate::types::MessageMeta) -> Result<bool> {
+    let rows = conn.execute(
+        "INSERT OR IGNORE INTO messages
+            (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
+             created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        rusqlite::params![
+            msg.nostr_id,
+            msg.direction,
+            msg.sender,
+            msg.recipient,
+            msg.content,
+            msg.delivery_status,
+            msg.read_status,
+            msg.created_at,
+            msg.received_at,
+            meta.msg_id.as_deref(),
+            meta.thread_id.as_deref(),
+            meta.reply_to.as_deref(),
+            meta.transport.as_deref().unwrap_or("nostr"),
+            meta.transport_msg_id.as_deref(),
         ],
     )?;
     Ok(rows > 0)
@@ -556,5 +663,137 @@ mod tests {
         // Different relay has independent cursor
         let other = get_sync_cursor(&conn, "wss://other.relay").unwrap();
         assert_eq!(other, 0);
+    }
+
+    #[test]
+    fn schema_v2_has_new_columns_and_indexes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+
+        // Check messages table has new columns
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(messages)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(cols.contains(&"msg_id".to_string()), "missing msg_id column");
+        assert!(cols.contains(&"thread_id".to_string()), "missing thread_id column");
+        assert!(cols.contains(&"reply_to".to_string()), "missing reply_to column");
+        assert!(cols.contains(&"transport".to_string()), "missing transport column");
+        assert!(cols.contains(&"transport_msg_id".to_string()), "missing transport_msg_id column");
+
+        // Check threads table exists
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(tables.contains(&"threads".to_string()), "missing threads table");
+
+        // Check indexes exist
+        let indexes: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(indexes.contains(&"idx_messages_msg_id".to_string()), "missing idx_messages_msg_id");
+        assert!(indexes.contains(&"idx_messages_thread_id".to_string()), "missing idx_messages_thread_id");
+
+        // Check user_version = 2
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2, "user_version should be 2");
+    }
+
+    #[test]
+    fn migration_v1_to_v2_backfills_legacy_ids() {
+        // Simulate a v1 database by creating the old schema manually
+        let v1_schema = "
+            CREATE TABLE IF NOT EXISTS messages (
+                nostr_id         TEXT PRIMARY KEY,
+                direction        TEXT NOT NULL,
+                sender           TEXT NOT NULL,
+                recipient        TEXT NOT NULL,
+                content          TEXT NOT NULL,
+                delivery_status  TEXT NOT NULL DEFAULT 'pending',
+                read_status      TEXT NOT NULL DEFAULT 'unread',
+                created_at       TEXT NOT NULL,
+                received_at      TEXT NOT NULL
+            );
+            PRAGMA user_version = 1;
+        ";
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(v1_schema).unwrap();
+
+        // Insert a v1 row
+        conn.execute(
+            "INSERT INTO messages (nostr_id, direction, sender, recipient, content, delivery_status, read_status, created_at, received_at)
+             VALUES ('nostr123', 'in', 'sender', 'recipient', 'hello', 'received', 'unread', '2026-03-20T00:00:00Z', '2026-03-20T00:00:01Z')",
+            [],
+        ).unwrap();
+
+        // Run migration
+        migrate_v1_to_v2(&conn).unwrap();
+
+        // Verify backfill: msg_id should be 'legacy:nostr123'
+        let msg_id: String = conn
+            .query_row("SELECT msg_id FROM messages WHERE nostr_id = 'nostr123'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(msg_id, "legacy:nostr123");
+
+        // Verify transport_msg_id = nostr_id
+        let tmid: String = conn
+            .query_row("SELECT transport_msg_id FROM messages WHERE nostr_id = 'nostr123'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(tmid, "nostr123");
+
+        // Verify user_version = 2
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn insert_message_v2_stores_meta_fields() {
+        let conn = open_mem();
+        // Run migration so new columns exist
+        migrate_v1_to_v2(&conn).unwrap();
+
+        let msg = MessageRow {
+            nostr_id: "nid_v2".to_string(),
+            direction: Direction::In,
+            sender: "spubkey".to_string(),
+            recipient: "rpubkey".to_string(),
+            content: "v2 message".to_string(),
+            delivery_status: DeliveryStatus::Received,
+            read_status: ReadStatus::Unread,
+            created_at: "2026-03-23T00:00:00Z".to_string(),
+            received_at: "2026-03-23T00:00:01Z".to_string(),
+            sender_alias: None,
+        };
+        let meta = crate::types::MessageMeta {
+            msg_id: Some("019d1a2b-test".to_string()),
+            thread_id: Some("thread-abc".to_string()),
+            reply_to: None,
+            transport: Some("nostr".to_string()),
+            transport_msg_id: Some("nid_v2".to_string()),
+        };
+
+        let inserted = insert_message_v2(&conn, &msg, &meta).unwrap();
+        assert!(inserted, "v2 insert should succeed");
+
+        // Verify stored meta fields
+        let stored_msg_id: String = conn
+            .query_row("SELECT msg_id FROM messages WHERE nostr_id = 'nid_v2'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stored_msg_id, "019d1a2b-test");
     }
 }

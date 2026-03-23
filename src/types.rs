@@ -89,6 +89,22 @@ str_enum! {
     }
 }
 
+/// V2 message identity metadata — the transport-independent fields added in schema v2.
+/// Used alongside `MessageRow` when inserting messages with full v2 envelope data.
+#[derive(Debug, Clone, Default)]
+pub struct MessageMeta {
+    /// Logical message ID (UUIDv7 for new messages, "legacy:<nostr_id>" for backfilled v1).
+    pub msg_id: Option<String>,
+    /// Thread identifier this message belongs to (sha256 of topic or UUID).
+    pub thread_id: Option<String>,
+    /// Parent `msg_id` for threaded replies (always references msg_id, not transport_msg_id).
+    pub reply_to: Option<String>,
+    /// Transport used to deliver the message ("nostr" or "local").
+    pub transport: Option<String>,
+    /// Per-transport copy identifier (Nostr event ID or local row ID).
+    pub transport_msg_id: Option<String>,
+}
+
 /// A single content part of an Envelope v2 message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
