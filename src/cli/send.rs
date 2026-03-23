@@ -99,6 +99,7 @@ async fn run_local(
     sender_db.run(move |conn| {
         insert_local_message(
             conn,
+            &msg_id_clone,  // nostr_id = msg_id for outbound
             &msg_id_clone,
             Direction::Out,
             &sender_hex_clone,
@@ -124,20 +125,31 @@ async fn run_local(
     let is_self = sender_db_path == recipient_db_path;
 
     if is_self {
-        // Self-send: write inbound copy to the same DB
+        // Self-send: write inbound copy to the same DB.
+        // Use a distinct nostr_id ("{msg_id}-in") to avoid PK collision with outbound copy.
+        // Use insert_message_v2 (nostr_id PK dedup) instead of insert_message_local (msg_id dedup)
+        // because both copies share the same logical msg_id.
+        let inbound_nostr_id = format!("{}-in", msg_id_for_recipient);
+        let inbound_msg_id = msg_id_for_recipient.clone();
         sender_db.run(move |conn| {
-            insert_local_message(
-                conn,
-                &msg_id_for_recipient,
-                Direction::In,
-                &sender_hex_for_recipient,
-                &recipient_hex_for_recipient,
-                &message_for_recipient,
-                DeliveryStatus::Received,
-                ReadStatus::Unread,
-                &env_ts_for_recipient,
-                &now_for_recipient,
-            )
+            let msg_row = store::MessageRow {
+                nostr_id: inbound_nostr_id,
+                direction: Direction::In,
+                sender: sender_hex_for_recipient,
+                recipient: recipient_hex_for_recipient,
+                content: message_for_recipient,
+                delivery_status: DeliveryStatus::Received,
+                read_status: ReadStatus::Unread,
+                created_at: env_ts_for_recipient,
+                received_at: now_for_recipient,
+                sender_alias: None,
+            };
+            let meta = MessageMeta {
+                msg_id: Some(inbound_msg_id),
+                transport: Some("local".to_string()),
+                ..Default::default()
+            };
+            store::insert_message_v2(conn, &msg_row, &meta)
         }).await?;
     } else {
         // Different DB: open recipient's DB with WAL + busy_timeout=10000
@@ -145,6 +157,7 @@ async fn run_local(
             let conn = open_recipient_db(&recipient_db_path_clone)?;
             insert_local_message(
                 &conn,
+                &msg_id_for_recipient,  // nostr_id = msg_id for recipient
                 &msg_id_for_recipient,
                 Direction::In,
                 &sender_hex_for_recipient,
@@ -176,6 +189,7 @@ fn open_recipient_db(path: &std::path::Path) -> Result<Connection> {
 /// Insert a local-transport message row. Uses INSERT OR IGNORE with msg_id as dedup key.
 fn insert_local_message(
     conn: &Connection,
+    nostr_id: &str,
     msg_id: &str,
     direction: Direction,
     sender: &str,
@@ -187,7 +201,7 @@ fn insert_local_message(
     received_at: &str,
 ) -> Result<bool> {
     let msg_row = store::MessageRow {
-        nostr_id: msg_id.to_string(),
+        nostr_id: nostr_id.to_string(),
         direction,
         sender: sender.to_string(),
         recipient: recipient.to_string(),

@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS relays (
     enabled     INTEGER NOT NULL DEFAULT 1
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id, direction);
 CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id);
 
 CREATE TABLE IF NOT EXISTS threads (
