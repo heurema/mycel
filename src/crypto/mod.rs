@@ -381,8 +381,7 @@ pub fn load_keys(enc_path: &Path, storage: IdentityStorage) -> Result<Keys> {
 /// Load keys from encrypted file, auto-migrating v1 → v2.
 fn load_from_file(enc_path: &Path) -> Result<Keys> {
     let passphrase = get_passphrase("Enter passphrase to unlock your key: ")?;
-    let (hex, was_v1) = load_key_file(enc_path, &passphrase)
-        .map_err(|e| anyhow::anyhow!("{e} — wrong passphrase or corrupted key file"))?;
+    let (hex, was_v1) = load_key_file(enc_path, &passphrase)?;
     let keys = Keys::parse(&hex)
         .map_err(|e| anyhow::anyhow!("invalid key from file: {e}"))?;
 

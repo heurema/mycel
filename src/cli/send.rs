@@ -179,10 +179,15 @@ async fn run_local(
     Ok(())
 }
 
-/// Open a recipient's DB with WAL mode and busy_timeout=10000.
+/// Open a recipient's DB with WAL mode, busy_timeout=10000, and full schema.
+/// Uses store::open() to ensure schema + migration are applied (not just raw Connection).
 fn open_recipient_db(path: &std::path::Path) -> Result<Connection> {
-    let conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;")?;
+    // Ensure parent directory exists (recipient may not have run `mycel init`)
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let conn = store::open(path)?;
+    conn.execute_batch("PRAGMA busy_timeout=10000;")?;
     Ok(conn)
 }
 

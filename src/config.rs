@@ -79,7 +79,11 @@ impl Default for Config {
 /// Expand a leading `~` in `path` to the user's home directory.
 /// Returns the original string if no `~` prefix or if home cannot be resolved.
 pub fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
+    if path == "~" {
+        if let Some(home) = dirs_home() {
+            return home;
+        }
+    } else if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = dirs_home() {
             return home.join(rest);
         }

@@ -422,4 +422,5 @@ mod tests {
         // When caller knows message arrived via Nostr, it should skip verify_sig().
         // Transport is NOT stored in Envelope per RFC — it's caller context.
     }
+
 }

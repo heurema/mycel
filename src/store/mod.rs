@@ -268,6 +268,10 @@ pub fn insert_message_v2(conn: &Connection, msg: &MessageRow, meta: &crate::type
 /// nostr_id is set to msg_id for local messages (no Nostr event ID).
 pub fn insert_message_local(conn: &Connection, msg: &MessageRow, meta: &crate::types::MessageMeta) -> Result<bool> {
     let msg_id = meta.msg_id.as_deref().unwrap_or("");
+    // Guard: empty msg_id would bypass dedup — callers must provide a real ID
+    if msg_id.is_empty() {
+        return Err(anyhow::anyhow!("msg_id is required for local message insert"));
+    }
     // Use msg_id as nostr_id placeholder for local messages so the PK is populated.
     let nostr_id = if msg.nostr_id.is_empty() { msg_id } else { &msg.nostr_id };
     let rows = conn.execute(
