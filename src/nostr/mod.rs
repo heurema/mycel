@@ -65,6 +65,125 @@ pub async fn fetch_gift_wraps(
     Ok(events.into_iter().collect())
 }
 
+/// Helper to add a custom tag `[kind_str, value]` to an EventBuilder.
+/// Wraps Tag::custom with TagKind::custom for multi-character custom tag names like
+/// "mycel-thread-id" and "mycel-msg-id".
+fn add_tag(builder: EventBuilder, kind_str: &str, value: &str) -> EventBuilder {
+    builder.tag(Tag::custom(TagKind::custom(kind_str), [value]))
+}
+
+/// Build and publish a NIP-17 multi-recipient Kind 14 (ChatMessage) rumor wrapped for each
+/// member individually (Gift Wrap Kind 1059) plus a self-copy.
+///
+/// Returns a `HashMap<member_pubkey_hex, event_id_hex>` mapping each member's pubkey to the
+/// event ID of the Gift Wrap published for them (for DB transport_msg_id mapping).
+///
+/// Custom tags added to the rumor (inside encrypted content, invisible to relays):
+/// - `["mycel-thread-id", thread_id]`
+/// - `["mycel-msg-id", msg_id]`
+/// - `["subject", subject]` (if provided)
+/// - `["e", reply_event_id]` (if reply_to_event_id is provided — NIP-17 reply chain)
+/// - `["p", member_pubkey]` for each member in `members`
+///
+/// Fan-out: publishes to `relay_urls` for each member. Relay publish is best-effort;
+/// an error for one member does not abort others.
+pub async fn multi_recipient_gift_wrap(
+    keys: &Keys,
+    members: &[String],
+    rumor_content: &str,
+    relay_urls: &[String],
+    thread_id: &str,
+    msg_id: &str,
+    subject: Option<&str>,
+    reply_to_event_id: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<std::collections::HashMap<String, String>> {
+    use std::collections::HashMap;
+
+    // Build the Kind 14 (ChatMessage) unsigned rumor with all tags
+    let sender_pk = keys.public_key();
+
+    let mut builder = EventBuilder::new(Kind::ChatMessage, rumor_content);
+
+    // p-tags for all thread members
+    for member_hex in members {
+        if let Ok(pk) = PublicKey::from_hex(member_hex) {
+            builder = builder.tag(Tag::public_key(pk));
+        }
+    }
+
+    // subject tag (first message or rename)
+    if let Some(subj) = subject {
+        builder = builder.tag(Tag::custom(TagKind::Subject, [subj]));
+    }
+
+    // e-tag for reply chain (parent NIP-17 event ID)
+    if let Some(reply_event_id) = reply_to_event_id {
+        if let Ok(eid) = EventId::from_hex(reply_event_id) {
+            builder = builder.tag(Tag::event(eid));
+        }
+    }
+
+    // Custom mycel tags (inside encrypted rumor, invisible to relays)
+    // add_tag wraps Tag::custom with a custom TagKind string
+    builder = add_tag(builder, "mycel-thread-id", thread_id);
+    builder = add_tag(builder, "mycel-msg-id", msg_id);
+
+    let _rumor: UnsignedEvent = builder.build(sender_pk);
+
+    // Connect to relays
+    let client = build_client(keys.clone(), relay_urls).await?;
+
+    let mut event_ids: HashMap<String, String> = HashMap::new();
+
+    // Fan-out: wrap and publish for each member individually
+    for member_hex in members {
+        let pk = match PublicKey::from_hex(member_hex) {
+            Ok(pk) => pk,
+            Err(_) => continue,
+        };
+
+        // Re-build with all tags for this recipient's copy
+        let mut b2 = EventBuilder::new(Kind::ChatMessage, rumor_content);
+        for m in members {
+            if let Ok(mpk) = PublicKey::from_hex(m) {
+                b2 = b2.tag(Tag::public_key(mpk));
+            }
+        }
+        if let Some(subj) = subject {
+            b2 = b2.tag(Tag::custom(TagKind::Subject, [subj]));
+        }
+        if let Some(reply_event_id) = reply_to_event_id {
+            if let Ok(eid) = EventId::from_hex(reply_event_id) {
+                b2 = b2.tag(Tag::event(eid));
+            }
+        }
+        b2 = add_tag(b2, "mycel-thread-id", thread_id);
+        b2 = add_tag(b2, "mycel-msg-id", msg_id);
+        let member_rumor: UnsignedEvent = b2.build(sender_pk);
+
+        match tokio::time::timeout(
+            timeout,
+            client.gift_wrap_to(relay_urls.iter().map(|s| s.as_str()), &pk, member_rumor, []),
+        )
+        .await
+        {
+            Ok(Ok(output)) => {
+                event_ids.insert(member_hex.clone(), output.val.to_hex());
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("gift_wrap_to failed for member {member_hex}: {e}");
+            }
+            Err(_) => {
+                tracing::warn!("gift_wrap_to timed out for member {member_hex}");
+            }
+        }
+    }
+
+    client.disconnect().await;
+    Ok(event_ids)
+}
+
 /// Unwrap a gift wrap event using the client's signer.
 #[allow(dead_code)]
 pub async fn unwrap_gift_wrap(

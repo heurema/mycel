@@ -128,6 +128,15 @@ pub enum AgentRole {
     Implementer,  // code/task implementation agent
 }
 
+/// A member of a thread with their join timestamp.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadMember {
+    /// Hex-encoded public key.
+    pub pubkey: String,
+    /// ISO 8601 UTC timestamp when the member joined.
+    pub joined_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

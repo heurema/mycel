@@ -431,6 +431,177 @@ fn map_contact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContactRow> {
 // Sync state
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Thread operations
+// ---------------------------------------------------------------------------
+
+/// A thread row from the threads table.
+#[derive(Debug, Clone)]
+pub struct ThreadRow {
+    pub thread_id: String,
+    pub subject: Option<String>,
+    /// Members JSON array (serialized Vec<ThreadMember>).
+    pub members: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Get a thread by thread_id. Returns None if not found.
+pub fn get_thread(conn: &Connection, thread_id: &str) -> Result<Option<ThreadRow>> {
+    let result = conn
+        .query_row(
+            "SELECT thread_id, subject, members, created_at, updated_at FROM threads WHERE thread_id = ?1",
+            rusqlite::params![thread_id],
+            |row| {
+                Ok(ThreadRow {
+                    thread_id: row.get(0)?,
+                    subject: row.get(1)?,
+                    members: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(result)
+}
+
+/// Insert a new thread. Returns Ok(true) if inserted, Ok(false) if already exists.
+pub fn insert_thread(conn: &Connection, thread: &ThreadRow) -> Result<bool> {
+    let rows = conn.execute(
+        "INSERT OR IGNORE INTO threads (thread_id, subject, members, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            thread.thread_id,
+            thread.subject,
+            thread.members,
+            thread.created_at,
+            thread.updated_at,
+        ],
+    )?;
+    Ok(rows > 0)
+}
+
+/// Update thread members JSON column and updated_at timestamp.
+pub fn update_thread_members(conn: &Connection, thread_id: &str, members_json: &str, updated_at: &str) -> Result<bool> {
+    let rows = conn.execute(
+        "UPDATE threads SET members = ?1, updated_at = ?2 WHERE thread_id = ?3",
+        rusqlite::params![members_json, updated_at, thread_id],
+    )?;
+    Ok(rows > 0)
+}
+
+/// Add a member to the thread's JSON members array.
+/// Deserializes current members, appends new member if not already present, re-serializes.
+pub fn add_thread_member(conn: &Connection, thread_id: &str, pubkey: &str, joined_at: &str) -> Result<bool> {
+    use crate::types::ThreadMember;
+
+    let thread = get_thread(conn, thread_id)?;
+    let thread = match thread {
+        Some(t) => t,
+        None => return Ok(false),
+    };
+
+    let mut members: Vec<ThreadMember> = serde_json::from_str(&thread.members)
+        .unwrap_or_default();
+
+    // Idempotent: skip if already a member
+    if members.iter().any(|m| m.pubkey == pubkey) {
+        return Ok(true);
+    }
+
+    members.push(ThreadMember {
+        pubkey: pubkey.to_string(),
+        joined_at: joined_at.to_string(),
+    });
+
+    let members_json = serde_json::to_string(&members)?;
+    let now = crate::envelope::now_iso8601();
+    update_thread_members(conn, thread_id, &members_json, &now)
+}
+
+/// Remove a member from the thread's JSON members array.
+pub fn remove_thread_member(conn: &Connection, thread_id: &str, pubkey: &str) -> Result<bool> {
+    use crate::types::ThreadMember;
+
+    let thread = get_thread(conn, thread_id)?;
+    let thread = match thread {
+        Some(t) => t,
+        None => return Ok(false),
+    };
+
+    let members: Vec<ThreadMember> = serde_json::from_str(&thread.members)
+        .unwrap_or_default();
+    let filtered: Vec<ThreadMember> = members.into_iter().filter(|m| m.pubkey != pubkey).collect();
+    let members_json = serde_json::to_string(&filtered)?;
+    let now = crate::envelope::now_iso8601();
+    update_thread_members(conn, thread_id, &members_json, &now)
+}
+
+/// Get all messages for a thread ordered by created_at ASC.
+pub fn get_thread_messages(conn: &Connection, thread_id: &str) -> Result<Vec<MessageRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT m.nostr_id, m.direction, m.sender, m.recipient, m.content,
+                m.delivery_status, m.read_status, m.created_at, m.received_at,
+                c.alias
+         FROM messages m
+         LEFT JOIN contacts c ON c.pubkey = m.sender
+         WHERE m.thread_id = ?1
+         ORDER BY m.created_at ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![thread_id], map_message_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Get all messages for a thread with full v2 metadata (msg_id, reply_to, transport_msg_id).
+pub fn get_thread_messages_full(conn: &Connection, thread_id: &str) -> Result<Vec<(MessageRow, crate::types::MessageMeta)>> {
+    let mut stmt = conn.prepare(
+        "SELECT m.nostr_id, m.direction, m.sender, m.recipient, m.content,
+                m.delivery_status, m.read_status, m.created_at, m.received_at,
+                c.alias,
+                m.msg_id, m.thread_id, m.reply_to, m.transport, m.transport_msg_id
+         FROM messages m
+         LEFT JOIN contacts c ON c.pubkey = m.sender
+         WHERE m.thread_id = ?1
+         ORDER BY m.created_at ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![thread_id], |row| {
+        let msg = MessageRow {
+            nostr_id: row.get(0)?,
+            direction: row.get(1)?,
+            sender: row.get(2)?,
+            recipient: row.get(3)?,
+            content: row.get(4)?,
+            delivery_status: row.get(5)?,
+            read_status: row.get(6)?,
+            created_at: row.get(7)?,
+            received_at: row.get(8)?,
+            sender_alias: row.get(9)?,
+        };
+        let meta = crate::types::MessageMeta {
+            msg_id: row.get(10)?,
+            thread_id: row.get(11)?,
+            reply_to: row.get(12)?,
+            transport: row.get(13)?,
+            transport_msg_id: row.get(14)?,
+        };
+        Ok((msg, meta))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Look up the transport_msg_id for a given msg_id (for e-tag resolution).
+pub fn get_transport_msg_id_by_msg_id(conn: &Connection, msg_id: &str) -> Result<Option<String>> {
+    let result = conn
+        .query_row(
+            "SELECT transport_msg_id FROM messages WHERE msg_id = ?1 LIMIT 1",
+            rusqlite::params![msg_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(result)
+}
+
 /// Get sync cursor for a relay URL (0 if not set)
 pub fn get_sync_cursor(conn: &Connection, relay_url: &str) -> Result<u64> {
     let result = conn

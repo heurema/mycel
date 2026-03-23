@@ -19,6 +19,15 @@ pub enum MycelError {
 
     #[error("alias already in use: '{alias}' (by {pubkey})")]
     AliasCollision { alias: String, pubkey: String },
+
+    #[error("thread not found: {thread_id}")]
+    ThreadNotFound { thread_id: String },
+
+    #[error("thread member limit (10) exceeded")]
+    ThreadMemberLimitExceeded,
+
+    #[error("invalid thread id: {thread_id}")]
+    InvalidThreadId { thread_id: String },
 }
 
 /// Max message payload size (C7)

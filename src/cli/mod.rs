@@ -5,6 +5,7 @@ mod inbox;
 mod init;
 mod send;
 mod status;
+mod thread;
 mod watch;
 
 use anyhow::Result;
@@ -64,6 +65,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Manage and participate in NIP-17 group message threads
+    Thread {
+        #[command(subcommand)]
+        action: thread::ThreadCommand,
+    },
 }
 
 impl Cli {
@@ -77,6 +83,7 @@ impl Cli {
             Command::Doctor => doctor::run().await,
             Command::Watch { interval } => watch::run(interval).await,
             Command::Status { json } => status::run(json),
+            Command::Thread { action } => thread::run(action).await,
         }
     }
 }

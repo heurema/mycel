@@ -222,6 +222,23 @@ fn canonical_json_sorted(val: &serde_json::Value) -> String {
     }
 }
 
+/// Extract the value of a custom mycel tag from a NIP-17 Kind 14 rumor's tags.
+///
+/// Tags in a Nostr UnsignedEvent are `Vec<Tag>`. This helper finds a tag whose first
+/// element matches `tag_name` and returns the second element.
+///
+/// Used to extract `mycel-msg-id` and `mycel-thread-id` from unwrapped rumors
+/// for event_id → msg_id mapping and reply_to resolution.
+pub fn extract_mycel_tag(tags: &[nostr_sdk::Tag], tag_name: &str) -> Option<String> {
+    for tag in tags {
+        let content = tag.as_slice();
+        if content.len() >= 2 && content[0] == tag_name {
+            return Some(content[1].to_string());
+        }
+    }
+    None
+}
+
 /// Validate message size per C7. Returns Err with byte count if too large.
 pub fn validate_message_size(msg: &str) -> Result<(), crate::error::MycelError> {
     let size = msg.len();
