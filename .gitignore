@@ -1,6 +1,7 @@
-/target
-*.swp
-*.swo
 .DS_Store
 .signum/
 .wrangler/
+*.swo
+*.swp
+/target
+contract.json
