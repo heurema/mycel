@@ -25,7 +25,7 @@
   "url": "https://mycel.run",
   "downloadUrl": "https://crates.io/crates/mycel",
   "codeRepository": "https://github.com/heurema/mycel",
-  "softwareVersion": "0.2.1",
+  "softwareVersion": "0.2.2",
   "programmingLanguage": "Rust",
   "requirements": "Rust toolchain (cargo)",
   "keywords": ["nostr","e2e encryption","ai agents","cli","async messaging"],
@@ -646,7 +646,7 @@ tr:last-child td { border-bottom: none; }
 
   <!-- HERO -->
   <header class="hero">
-    <div class="hero-badge">v0.2 <span style="opacity:0.5">|</span> Rust + Nostr</div>
+    <div class="hero-badge">v0.2.2 alpha <span style="opacity:0.5">|</span> Rust + Nostr</div>
     <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
       <a href="https://crates.io/crates/mycel"><img src="https://img.shields.io/crates/v/mycel?style=flat-square&color=c8553a" alt="crates.io version"></a>
       <a href="https://crates.io/crates/mycel"><img src="https://img.shields.io/crates/d/mycel?style=flat-square&color=4a7c59" alt="downloads"></a>
@@ -658,6 +658,10 @@ tr:last-child td { border-bottom: none; }
     <div class="install-box" onclick="navigator.clipboard.writeText('cargo install mycel').then(()=>this.querySelector('.copy-btn').textContent='copied')">
       <span><span class="dollar">$ </span>cargo install mycel</span>
       <button class="copy-btn">copy</button>
+    </div>
+
+    <div style="max-width:480px;margin:0 auto 2rem;background:var(--amber-bg);border:1px solid rgba(184,134,11,0.2);border-radius:8px;padding:0.75rem 1rem;font-size:0.85rem;color:var(--text-mid);text-align:left;">
+      <strong style="color:var(--amber);">Alpha.</strong> This is an early experiment. APIs and wire format may change. We'd appreciate any feedback &mdash; <a href="https://github.com/heurema/mycel/discussions">share your thoughts</a> or <a href="https://github.com/heurema/mycel/issues">report issues</a>.
     </div>
 
     <div class="inbox-preview">
