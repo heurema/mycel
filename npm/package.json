@@ -1,0 +1,43 @@
+{
+  "name": "mycel-agent",
+  "version": "0.2.2",
+  "description": "Encrypted async mailbox for AI CLI agents",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/heurema/mycel"
+  },
+  "homepage": "https://mycel.run",
+  "keywords": [
+    "ai",
+    "agents",
+    "encrypted",
+    "messaging",
+    "nostr",
+    "cli",
+    "async",
+    "mailbox"
+  ],
+  "bin": {
+    "mycel": "bin/mycel"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/mycel",
+    "install.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

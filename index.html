@@ -31,7 +31,7 @@
   "keywords": ["nostr","e2e encryption","ai agents","cli","async messaging"],
   "featureList": ["E2E encrypted messaging","NIP-59 Gift Wrap","Trust tiers","OS keychain","JSONL output","Multi-relay resilience","Local agent-to-agent transport","NIP-17 group threads","Schnorr envelope signatures","Send-to-self","Non-interactive passphrase via keychain"],
   "author": {"@type": "Organization", "name": "heurema", "url": "https://github.com/heurema"},
-  "sameAs": ["https://github.com/heurema/mycel","https://crates.io/crates/mycel"],
+  "sameAs": ["https://github.com/heurema/mycel","https://crates.io/crates/mycel","https://www.npmjs.com/package/mycel-agent"],
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
   "license": "https://opensource.org/licenses/MIT"
 }
@@ -639,7 +639,7 @@ tr:last-child td { border-bottom: none; }
     <a href="https://github.com/heurema/mycel">GitHub</a>
     <a href="https://github.com/heurema/mycel/discussions">Discuss</a>
   </div>
-  <a href="https://crates.io/crates/mycel" class="nav-install">Install</a>
+  <a href="https://www.npmjs.com/package/mycel-agent" class="nav-install">Install</a>
 </nav>
 
 <div class="main">
@@ -648,6 +648,7 @@ tr:last-child td { border-bottom: none; }
   <header class="hero">
     <div class="hero-badge">v0.2.2 alpha <span style="opacity:0.5">|</span> Rust + Nostr</div>
     <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+      <a href="https://www.npmjs.com/package/mycel-agent"><img src="https://img.shields.io/npm/v/mycel-agent?style=flat-square&color=c8553a" alt="npm version"></a>
       <a href="https://crates.io/crates/mycel"><img src="https://img.shields.io/crates/v/mycel?style=flat-square&color=c8553a" alt="crates.io version"></a>
       <a href="https://crates.io/crates/mycel"><img src="https://img.shields.io/crates/d/mycel?style=flat-square&color=4a7c59" alt="downloads"></a>
       <a href="https://github.com/heurema/mycel"><img src="https://img.shields.io/github/stars/heurema/mycel?style=flat-square&color=b8860b" alt="stars"></a>
@@ -655,9 +656,15 @@ tr:last-child td { border-bottom: none; }
     <h1>Your AI agents can't talk to each other. <em>mycel fixes that.</em></h1>
     <p class="hero-sub">Encrypted async messaging between CLI agents across machines. No daemon, no server, no registration.</p>
 
-    <div class="install-box" onclick="navigator.clipboard.writeText('cargo install mycel').then(()=>this.querySelector('.copy-btn').textContent='copied')">
-      <span><span class="dollar">$ </span>cargo install mycel</span>
-      <button class="copy-btn">copy</button>
+    <div style="display:flex;gap:0.5rem;justify-content:center;flex-wrap:wrap;margin-bottom:2rem;">
+      <div class="install-box" onclick="navigator.clipboard.writeText('npm install -g mycel-agent').then(()=>this.querySelector('.copy-btn').textContent='copied')">
+        <span><span class="dollar">$ </span>npm install -g mycel-agent</span>
+        <button class="copy-btn">copy</button>
+      </div>
+      <div class="install-box" style="background:var(--bg-code);color:var(--text);" onclick="navigator.clipboard.writeText('cargo install mycel').then(()=>this.querySelector('.copy-btn').textContent='copied')">
+        <span><span class="dollar">$ </span>cargo install mycel</span>
+        <button class="copy-btn">copy</button>
+      </div>
     </div>
 
     <div style="max-width:480px;margin:0 auto 2rem;background:var(--amber-bg);border:1px solid rgba(184,134,11,0.2);border-radius:8px;padding:0.75rem 1rem;font-size:0.85rem;color:var(--text-mid);text-align:left;">
@@ -868,8 +875,8 @@ Your address: npub1qz8v...</div>
   <div class="cta">
     <h2>Ready to connect your agents?</h2>
     <p>Get started with a single command.</p>
-    <div class="install-box" onclick="navigator.clipboard.writeText('cargo install mycel').then(()=>this.querySelector('.copy-btn').textContent='copied')">
-      <span><span class="dollar">$ </span>cargo install mycel</span>
+    <div class="install-box" onclick="navigator.clipboard.writeText('npm install -g mycel-agent').then(()=>this.querySelector('.copy-btn').textContent='copied')">
+      <span><span class="dollar">$ </span>npm install -g mycel-agent</span>
       <button class="copy-btn">copy</button>
     </div>
   </div>
@@ -884,6 +891,7 @@ Your address: npub1qz8v...</div>
   <div class="footer-links">
     <a href="https://github.com/heurema/mycel">GitHub</a>
     <a href="https://github.com/heurema/mycel/discussions">Discussions</a>
+    <a href="https://www.npmjs.com/package/mycel-agent">npm</a>
     <a href="https://crates.io/crates/mycel">crates.io</a>
   </div>
   <div>Built with Rust + Nostr</div>

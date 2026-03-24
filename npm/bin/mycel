@@ -1,0 +1,19 @@
+#!/usr/bin/env node
+"use strict";
+
+const { execFileSync } = require("child_process");
+const path = require("path");
+const fs = require("fs");
+
+const bin = path.join(__dirname, "mycel-bin");
+
+if (!fs.existsSync(bin)) {
+  console.error("mycel binary not found. Run: npm rebuild mycel-agent");
+  process.exit(1);
+}
+
+try {
+  execFileSync(bin, process.argv.slice(2), { stdio: "inherit" });
+} catch (err) {
+  process.exit(err.status || 1);
+}
