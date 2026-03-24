@@ -35,7 +35,10 @@ pub enum MycelError {
 pub const MAX_MESSAGE_SIZE: usize = 8192;
 
 /// Sync cursor overlap window in seconds (C2)
-pub const SYNC_OVERLAP_SECS: u64 = 300;
+/// NIP-59 Gift Wrap randomises the outer event timestamp by up to ±2 days
+/// for metadata privacy. The overlap must cover this window so that
+/// `since`-filtered relay queries never miss randomised events.
+pub const SYNC_OVERLAP_SECS: u64 = 2 * 24 * 3600; // 48 hours
 
 /// Max events to process per sync cycle (relay spam protection)
 pub const MAX_EVENTS_PER_SYNC: usize = 1000;
