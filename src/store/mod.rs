@@ -61,9 +61,9 @@ CREATE TABLE IF NOT EXISTS threads (
 );
 
 CREATE TABLE IF NOT EXISTS outbox (
-    msg_id          TEXT PRIMARY KEY,
+    msg_id          TEXT PRIMARY KEY CHECK(msg_id != ''),
     recipient_hex   TEXT NOT NULL,
-    envelope_json   TEXT NOT NULL,
+    envelope_json   TEXT NOT NULL CHECK(envelope_json != ''),
     relay_urls      TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'pending',
     retry_count     INTEGER NOT NULL DEFAULT 0,
@@ -78,11 +78,12 @@ CREATE INDEX IF NOT EXISTS idx_outbox_status_retry
     ON outbox(status, next_retry_at);
 
 CREATE TABLE IF NOT EXISTS acks (
-    msg_id      TEXT PRIMARY KEY,
+    msg_id      TEXT NOT NULL,
     ack_sender  TEXT NOT NULL,
     ack_status  TEXT NOT NULL DEFAULT 'pending',
     created_at  TEXT NOT NULL,
-    sent_at     TEXT
+    sent_at     TEXT,
+    PRIMARY KEY (msg_id, ack_sender)
 );
 
 CREATE INDEX IF NOT EXISTS idx_acks_msg_id ON acks(msg_id);
@@ -139,11 +140,12 @@ const MIGRATION_V1_TO_V3: &[&str] = &[
 /// MIGRATION_V3_TO_V4: applied when user_version < 4.
 const MIGRATION_V3_TO_V4: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS acks (
-        msg_id      TEXT PRIMARY KEY,
+        msg_id      TEXT NOT NULL,
         ack_sender  TEXT NOT NULL,
         ack_status  TEXT NOT NULL DEFAULT 'pending',
         created_at  TEXT NOT NULL,
-        sent_at     TEXT
+        sent_at     TEXT,
+        PRIMARY KEY (msg_id, ack_sender)
     )",
     "CREATE INDEX IF NOT EXISTS idx_acks_msg_id ON acks(msg_id)",
     "PRAGMA user_version = 4",
@@ -414,7 +416,7 @@ pub fn insert_message_v2(conn: &Connection, msg: &MessageRow, meta: &crate::type
                 (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
                  created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
-             WHERE NOT EXISTS (SELECT 1 FROM messages WHERE msg_id = ?10 AND msg_id IS NOT NULL AND msg_id != '')",
+             WHERE NOT EXISTS (SELECT 1 FROM messages WHERE msg_id = ?10 AND direction = ?2 AND msg_id IS NOT NULL AND msg_id != '')",
             rusqlite::params![
                 msg.nostr_id,
                 msg.direction,
@@ -476,7 +478,7 @@ pub fn insert_message_local(conn: &Connection, msg: &MessageRow, meta: &crate::t
             (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
              created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
          SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
-         WHERE NOT EXISTS (SELECT 1 FROM messages WHERE msg_id = ?10 AND msg_id IS NOT NULL AND msg_id != '')",
+         WHERE NOT EXISTS (SELECT 1 FROM messages WHERE msg_id = ?10 AND direction = ?2 AND msg_id IS NOT NULL AND msg_id != '')",
         rusqlite::params![
             nostr_id,
             msg.direction,
@@ -952,7 +954,15 @@ pub async fn flush_outbox(db: &Db, keys: &Keys, relay_urls: Vec<String>) -> Resu
         let env: Envelope = match serde_json::from_str(&row.envelope_json) {
             Ok(e) => e,
             Err(e) => {
-                tracing::warn!("flush_outbox: invalid envelope_json for {}: {e}", row.msg_id);
+                tracing::warn!("flush_outbox: poison-pill — invalid envelope_json for {}: {e}", row.msg_id);
+                let mid = row.msg_id.clone();
+                let _ = db.run(move |conn| {
+                    conn.execute(
+                        "UPDATE outbox SET status = 'failed_permanent', last_attempt_at = datetime('now') WHERE msg_id = ?1",
+                        rusqlite::params![mid],
+                    )?;
+                    Ok(())
+                }).await;
                 continue;
             }
         };
@@ -961,7 +971,15 @@ pub async fn flush_outbox(db: &Db, keys: &Keys, relay_urls: Vec<String>) -> Resu
         let recipient_pk = match PublicKey::from_hex(&row.recipient_hex) {
             Ok(pk) => pk,
             Err(e) => {
-                tracing::warn!("flush_outbox: invalid recipient for {}: {e}", row.msg_id);
+                tracing::warn!("flush_outbox: poison-pill — invalid recipient for {}: {e}", row.msg_id);
+                let mid = row.msg_id.clone();
+                let _ = db.run(move |conn| {
+                    conn.execute(
+                        "UPDATE outbox SET status = 'failed_permanent', last_attempt_at = datetime('now') WHERE msg_id = ?1",
+                        rusqlite::params![mid],
+                    )?;
+                    Ok(())
+                }).await;
                 continue;
             }
         };
@@ -1022,7 +1040,7 @@ pub async fn flush_outbox(db: &Db, keys: &Keys, relay_urls: Vec<String>) -> Resu
 /// Used to build the negentropy known-items set for NIP-77 reconciliation.
 pub fn get_known_nostr_ids(conn: &Connection) -> Result<Vec<(String, u64)>> {
     let mut stmt = conn.prepare(
-        "SELECT nostr_id, CAST(strftime('%s', created_at) AS INTEGER) FROM messages WHERE direction = 'in'"
+        "SELECT nostr_id, COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0) FROM messages WHERE direction = 'in'"
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))

@@ -45,7 +45,7 @@ pub struct AckConfig {
 }
 
 fn default_ack_enabled() -> bool {
-    true
+    false
 }
 
 fn default_ack_min_interval_secs() -> u64 {
