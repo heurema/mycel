@@ -6,7 +6,7 @@ use tokio::time::timeout;
 
 use crate::config::IdentityStorage;
 use crate::error::MycelError;
-use crate::{config, crypto, store};
+use crate::{config, crypto, nostr as mycel_nostr, store};
 
 /// Test TCP connectivity to a relay URL (wss://host[:port]).
 async fn check_relay(url: &str) -> bool {
@@ -136,6 +136,17 @@ pub async fn run_with_dirs(
         );
     } else {
         println!("{}/{} relays reachable.", reachable.len(), cfg.relays.urls.len());
+    }
+
+    // Publish kind:10050 inbox relay list (non-blocking — warn on error, never abort init)
+    if !reachable.is_empty() {
+        let inbox_relays: Vec<String> = reachable.iter().take(3).cloned().collect();
+        let publish_timeout = std::time::Duration::from_secs(3);
+        if let Err(e) = mycel_nostr::publish_inbox_relay_list(&keys, &inbox_relays, publish_timeout).await {
+            tracing::warn!("could not publish inbox relay list (kind:10050): {e}");
+        }
+    } else {
+        tracing::warn!("skipping inbox relay list publish: no reachable relays");
     }
 
     // AC6: print npub

@@ -8,6 +8,10 @@ const DEFAULT_RELAYS: &[&str] = &[
     "wss://nos.lol",
     "wss://relay.damus.io",
     "wss://relay.nostr.band",
+    "wss://relay.primal.net",
+    "wss://relay.snort.social",
+    "wss://nostr.mutinywallet.com",
+    "wss://nostr.wine",
 ];
 
 /// A local agent entry in [local.agents] config section.
@@ -153,16 +157,14 @@ mod tests {
         let loaded: Config = toml::from_str(&std::fs::read_to_string(&config_path).unwrap())
             .expect("toml parse");
 
-        // Relay URLs must contain all three defaults
+        // Relay URLs must contain all seven defaults
         assert!(loaded.relays.urls.contains(&"wss://nos.lol".to_string()));
-        assert!(loaded
-            .relays
-            .urls
-            .contains(&"wss://relay.damus.io".to_string()));
-        assert!(loaded
-            .relays
-            .urls
-            .contains(&"wss://relay.nostr.band".to_string()));
+        assert!(loaded.relays.urls.contains(&"wss://relay.damus.io".to_string()));
+        assert!(loaded.relays.urls.contains(&"wss://relay.nostr.band".to_string()));
+        assert!(loaded.relays.urls.contains(&"wss://relay.primal.net".to_string()));
+        assert!(loaded.relays.urls.contains(&"wss://relay.snort.social".to_string()));
+        assert!(loaded.relays.urls.contains(&"wss://nostr.mutinywallet.com".to_string()));
+        assert!(loaded.relays.urls.contains(&"wss://nostr.wine".to_string()));
 
         // Identity storage default
         assert_eq!(loaded.identity.storage, IdentityStorage::Keychain);
@@ -172,10 +174,14 @@ mod tests {
     fn default_relay_urls_correct() {
         let cfg = Config::default();
         let urls = &cfg.relays.urls;
-        assert_eq!(urls.len(), 3);
+        assert_eq!(urls.len(), 7);
         assert!(urls.iter().any(|u| u == "wss://nos.lol"));
         assert!(urls.iter().any(|u| u == "wss://relay.damus.io"));
         assert!(urls.iter().any(|u| u == "wss://relay.nostr.band"));
+        assert!(urls.iter().any(|u| u == "wss://relay.primal.net"));
+        assert!(urls.iter().any(|u| u == "wss://relay.snort.social"));
+        assert!(urls.iter().any(|u| u == "wss://nostr.mutinywallet.com"));
+        assert!(urls.iter().any(|u| u == "wss://nostr.wine"));
     }
 
     #[test]

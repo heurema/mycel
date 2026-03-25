@@ -259,11 +259,25 @@ async fn run_nostr(
     let client = mycel_nostr::build_client(keys.clone(), &relay_urls)
         .await
         .map_err(|e| anyhow::anyhow!("{e} — could not connect to relay; check your network connection"))?;
-    let (event_id, ok_count) = mycel_nostr::publish_gift_wrap(&client, &relay_urls, &recipient_pk, rumor, timeout)
+
+    // Fetch recipient's kind:10050 inbox relay list; fall back to own config relays if not found
+    let publish_relays = match mycel_nostr::fetch_inbox_relays(&client, &relay_urls, &recipient_pk, timeout).await {
+        Ok(inbox_relays) if !inbox_relays.is_empty() => inbox_relays,
+        Ok(_) => {
+            tracing::warn!("recipient has no kind:10050 inbox relay list; using own config relays");
+            relay_urls.clone()
+        }
+        Err(e) => {
+            tracing::warn!("could not fetch recipient inbox relays: {e}; using own config relays");
+            relay_urls.clone()
+        }
+    };
+
+    let (event_id, ok_count) = mycel_nostr::publish_gift_wrap(&client, &publish_relays, &recipient_pk, rumor, timeout)
         .await
         .map_err(|e| anyhow::anyhow!("{e} — relay unreachable; check your network connection"))?;
 
-    let total = relay_urls.len();
+    let total = publish_relays.len();
     let failed = total.saturating_sub(ok_count);
 
     // 8. Determine delivery status (C1: 1 relay ack = success)

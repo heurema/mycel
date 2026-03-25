@@ -184,6 +184,66 @@ pub async fn multi_recipient_gift_wrap(
     Ok(event_ids)
 }
 
+/// Publish a kind:10050 (InboxRelays) event announcing the relay list for this identity.
+/// Builds the event with one Tag::relay per URL and publishes via client.send_event_builder().
+/// The caller is responsible for connecting to relays before calling this function.
+pub async fn publish_inbox_relay_list(
+    keys: &Keys,
+    relay_urls: &[String],
+    timeout: Duration,
+) -> Result<()> {
+    let client = build_client(keys.clone(), relay_urls).await?;
+
+    let mut builder = EventBuilder::new(Kind::InboxRelays, "");
+    for url in relay_urls {
+        if let Ok(relay_url) = RelayUrl::parse(url) {
+            builder = builder.tag(Tag::relay(relay_url));
+        }
+    }
+
+    tokio::time::timeout(timeout, client.send_event_builder(builder))
+        .await
+        .map_err(|_| anyhow::anyhow!("publish inbox relay list timed out after {}s", timeout.as_secs()))?
+        .map_err(|e| anyhow::anyhow!("publish inbox relay list failed: {e}"))?;
+
+    client.disconnect().await;
+    Ok(())
+}
+
+/// Fetch the kind:10050 (InboxRelays) event for `recipient_pubkey` from the given relays.
+/// Returns a Vec of relay URL strings extracted from the event's relay tags.
+/// Returns an empty Vec if no kind:10050 event is found.
+pub async fn fetch_inbox_relays(
+    client: &Client,
+    relay_urls: &[String],
+    recipient_pubkey: &PublicKey,
+    timeout: Duration,
+) -> Result<Vec<String>> {
+    let filter = Filter::new()
+        .author(*recipient_pubkey)
+        .kind(Kind::InboxRelays)
+        .limit(1);
+
+    let events = client
+        .fetch_events_from(relay_urls.iter().map(|s| s.as_str()), filter, timeout)
+        .await?;
+
+    let relay_list: Vec<String> = events
+        .into_iter()
+        .flat_map(|event| {
+            event.tags.into_iter().filter_map(|tag| {
+                if let Some(TagStandard::Relay(url)) = tag.to_standardized() {
+                    Some(url.to_string())
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    Ok(relay_list)
+}
+
 /// Unwrap a gift wrap event using the client's signer.
 #[allow(dead_code)]
 pub async fn unwrap_gift_wrap(
