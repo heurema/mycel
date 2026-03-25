@@ -236,30 +236,64 @@ pub fn insert_message(conn: &Connection, msg: &MessageRow) -> Result<bool> {
 }
 
 /// Insert a message with full v2 metadata fields.
-/// Returns Ok(true) if inserted, Ok(false) if duplicate (INSERT OR IGNORE on nostr_id).
+/// Returns Ok(true) if inserted, Ok(false) if duplicate.
+///
+/// Dedup strategy:
+///   - v2 (msg_id present): INSERT ... SELECT ... WHERE NOT EXISTS (msg_id match) —
+///     handles outbox retries that reuse the same msg_id with a new nostr_id.
+///   - v1 / legacy: (msg_id absent) INSERT OR IGNORE on nostr_id PRIMARY KEY.
 pub fn insert_message_v2(conn: &Connection, msg: &MessageRow, meta: &crate::types::MessageMeta) -> Result<bool> {
-    let rows = conn.execute(
-        "INSERT OR IGNORE INTO messages
-            (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
-             created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-        rusqlite::params![
-            msg.nostr_id,
-            msg.direction,
-            msg.sender,
-            msg.recipient,
-            msg.content,
-            msg.delivery_status,
-            msg.read_status,
-            msg.created_at,
-            msg.received_at,
-            meta.msg_id.as_deref(),
-            meta.thread_id.as_deref(),
-            meta.reply_to.as_deref(),
-            meta.transport.as_deref().unwrap_or("nostr"),
-            meta.transport_msg_id.as_deref(),
-        ],
-    )?;
+    let rows = if meta.msg_id.as_deref().map(|s| !s.is_empty()).unwrap_or(false) {
+        // v2 msg_id dedup: use WHERE NOT EXISTS to prevent duplicate logical messages
+        // even when nostr_id differs (e.g. outbox retry with new event ID)
+        conn.execute(
+            "INSERT OR IGNORE INTO messages
+                (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
+                 created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+             WHERE NOT EXISTS (SELECT 1 FROM messages WHERE msg_id = ?10 AND msg_id IS NOT NULL AND msg_id != '')",
+            rusqlite::params![
+                msg.nostr_id,
+                msg.direction,
+                msg.sender,
+                msg.recipient,
+                msg.content,
+                msg.delivery_status,
+                msg.read_status,
+                msg.created_at,
+                msg.received_at,
+                meta.msg_id.as_deref(),
+                meta.thread_id.as_deref(),
+                meta.reply_to.as_deref(),
+                meta.transport.as_deref().unwrap_or("nostr"),
+                meta.transport_msg_id.as_deref(),
+            ],
+        )?
+    } else {
+        // legacy: no msg_id, fall back to nostr_id PK dedup
+        conn.execute(
+            "INSERT OR IGNORE INTO messages
+                (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
+                 created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            rusqlite::params![
+                msg.nostr_id,
+                msg.direction,
+                msg.sender,
+                msg.recipient,
+                msg.content,
+                msg.delivery_status,
+                msg.read_status,
+                msg.created_at,
+                msg.received_at,
+                meta.msg_id.as_deref(),
+                meta.thread_id.as_deref(),
+                meta.reply_to.as_deref(),
+                meta.transport.as_deref().unwrap_or("nostr"),
+                meta.transport_msg_id.as_deref(),
+            ],
+        )?
+    };
     Ok(rows > 0)
 }
 

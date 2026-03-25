@@ -5,7 +5,7 @@ use anyhow::Result;
 use nostr_sdk::prelude::*;
 use std::time::Duration;
 
-use crate::types::{DeliveryStatus, Direction, ReadStatus, TrustTier};
+use crate::types::{DeliveryStatus, Direction, MessageMeta, Part, ReadStatus, TrustTier};
 use crate::{envelope, error::{MAX_EVENTS_PER_SYNC, SYNC_OVERLAP_SECS}, nostr as mycel_nostr, store};
 
 /// Result of a single sync cycle.
@@ -74,12 +74,12 @@ pub async fn sync_once(
         db.run(move |conn| {
             let mut count = 0u64;
             for msg in &unwrapped {
-                if let Some(row) = parse_and_validate(conn, &my_hex_owned, msg)? {
+                if let Some((row, meta)) = parse_and_validate(conn, &my_hex_owned, msg)? {
                     // Skip storage entirely for blocked senders
                     if row.delivery_status == DeliveryStatus::Blocked {
                         continue;
                     }
-                    if store::insert_message(conn, &row)? {
+                    if store::insert_message_v2(conn, &row, &meta)? {
                         count += 1;
                     }
                 }
@@ -115,13 +115,13 @@ fn parse_and_validate(
     conn: &rusqlite::Connection,
     my_hex: &str,
     msg: &UnwrappedData,
-) -> Result<Option<store::MessageRow>> {
+) -> Result<Option<(store::MessageRow, MessageMeta)>> {
     let env: envelope::Envelope = match serde_json::from_str(&msg.rumor_content) {
         Ok(e) => e,
         Err(_) => return Ok(None),
     };
 
-    if env.v != 1 {
+    if env.v != 1 && env.v != 2 { // v1 and v2 accepted; unknown versions dropped
         return Ok(None);
     }
 
@@ -134,9 +134,20 @@ fn parse_and_validate(
         return Ok(None);
     }
 
-    if env.msg.len() > crate::error::MAX_MESSAGE_SIZE {
+    // Size limit: check entire raw envelope (prevents oversized DataPart bypass)
+    if msg.rumor_content.len() > crate::error::MAX_MESSAGE_SIZE {
         return Ok(None);
     }
+
+    // Extract text content: v2 uses parts[], v1 uses legacy msg field
+    let content: String = if !env.parts.is_empty() {
+        env.parts.iter().filter_map(|p| match p {
+            Part::TextPart { text } => Some(text.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>().join("\n")
+    } else {
+        env.msg.clone()
+    };
 
     let trust_tier = match store::get_contact_by_pubkey(conn, &msg.sender_hex)? {
         Some(c) => c.trust_tier,
@@ -155,16 +166,162 @@ fn parse_and_validate(
         ReadStatus::Unread
     };
 
-    Ok(Some(store::MessageRow {
+    // v2: use msg_id for dedup (outbox retries reuse msg_id with new nostr_id)
+    // v1 (legacy): msg_id is None — dedup falls back to nostr_id PRIMARY KEY
+    let msg_id = if env.v == 2 && !env.msg_id.is_empty() {
+        Some(env.msg_id.clone())
+    } else {
+        None
+    };
+
+    // Only accept thread metadata from Known contacts (prevents thread injection)
+    let (thread_id, reply_to) = if trust_tier == TrustTier::Known {
+        (env.thread_id.clone(), env.reply_to.clone())
+    } else {
+        (None, None)
+    };
+
+    let meta = MessageMeta {
+        msg_id,
+        thread_id,
+        reply_to,
+        transport: Some("nostr".to_string()),
+        transport_msg_id: Some(msg.nostr_id.clone()),
+    };
+
+    let row = store::MessageRow {
         nostr_id: msg.nostr_id.clone(),
         direction: Direction::In,
         sender: msg.sender_hex.clone(),
         recipient: my_hex.to_string(),
-        content: env.msg,
+        content,
         delivery_status,
         read_status,
         created_at: crate::envelope::timestamp_to_iso8601(msg.event_ts),
         received_at: crate::envelope::now_iso8601(),
         sender_alias: None,
-    }))
+    };
+
+    Ok(Some((row, meta)))
+}
+
+/// Extract text content from envelope parts (v2) or legacy msg field (v1).
+#[allow(dead_code)]
+pub(crate) fn extract_content(env: &envelope::Envelope) -> String {
+    if !env.parts.is_empty() {
+        env.parts.iter().filter_map(|p| match p {
+            Part::TextPart { text } => Some(text.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>().join("\n")
+    } else {
+        env.msg.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Part;
+
+    fn make_v1_content(from: &str, to: &str, msg: &str) -> String {
+        format!(
+            r#"{{"v":1,"from":"{from}","to":"{to}","msg":"{msg}","ts":"2026-03-25T00:00:00Z"}}"#
+        )
+    }
+
+    fn make_v2_content(from: &str, to: &str, msg_id: &str, text: &str) -> String {
+        format!(
+            r#"{{"v":2,"msg_id":"{msg_id}","from":"{from}","to":"{to}","ts":"2026-03-25T00:00:00Z","parts":[{{"type":"text","text":"{text}"}}]}}"#
+        )
+    }
+
+    fn open_mem() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(store::SCHEMA).unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_parse_and_validate_v1() {
+        let conn = open_mem();
+        let sender = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
+        let recipient = "1122334455667788990011223344556677889900112233445566778899001122";
+        let content = make_v1_content(sender, recipient, "hello v1");
+        let msg = UnwrappedData {
+            nostr_id: "nostr_v1_id".to_string(),
+            event_ts: 1742860800,
+            sender_hex: sender.to_string(),
+            rumor_content: content,
+        };
+        let result = parse_and_validate(&conn, recipient, &msg).unwrap();
+        assert!(result.is_some(), "v1 envelope must be accepted");
+        let (row, meta) = result.unwrap();
+        assert_eq!(row.content, "hello v1");
+        assert_eq!(row.nostr_id, "nostr_v1_id");
+        assert!(meta.msg_id.is_none(), "v1 has no msg_id dedup");
+    }
+
+    #[test]
+    fn test_parse_and_validate_v2() {
+        let conn = open_mem();
+        let sender = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
+        let recipient = "1122334455667788990011223344556677889900112233445566778899001122";
+        let msg_id = "01950000-0000-7000-8000-000000000042";
+        let content = make_v2_content(sender, recipient, msg_id, "hello v2");
+        let msg = UnwrappedData {
+            nostr_id: "nostr_v2_id".to_string(),
+            event_ts: 1742860800,
+            sender_hex: sender.to_string(),
+            rumor_content: content,
+        };
+        let result = parse_and_validate(&conn, recipient, &msg).unwrap();
+        assert!(result.is_some(), "v2 envelope must be accepted");
+        let (row, meta) = result.unwrap();
+        assert_eq!(row.content, "hello v2");
+        assert_eq!(row.nostr_id, "nostr_v2_id");
+        assert_eq!(meta.msg_id.as_deref(), Some(msg_id), "v2 must carry msg_id for dedup");
+    }
+
+    #[test]
+    fn test_parse_and_validate_unknown_version() {
+        let conn = open_mem();
+        let sender = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
+        let recipient = "1122334455667788990011223344556677889900112233445566778899001122";
+        // v3 is not a supported version
+        let content = format!(
+            r#"{{"v":3,"msg_id":"someid","from":"{sender}","to":"{recipient}","ts":"2026-03-25T00:00:00Z","parts":[]}}"#
+        );
+        let msg = UnwrappedData {
+            nostr_id: "nostr_v3_id".to_string(),
+            event_ts: 1742860800,
+            sender_hex: sender.to_string(),
+            rumor_content: content,
+        };
+        let result = parse_and_validate(&conn, recipient, &msg).unwrap();
+        assert!(result.is_none(), "unknown envelope version must be rejected");
+    }
+
+    #[test]
+    fn test_extract_content_v2_parts() {
+        let env = envelope::Envelope::new_v2(
+            "01950000-0000-7000-8000-000000000001".to_string(),
+            "from_hex".to_string(),
+            "to_hex".to_string(),
+            vec![Part::TextPart { text: "part text".to_string() }],
+        );
+        assert_eq!(extract_content(&env), "part text");
+    }
+
+    #[test]
+    fn test_extract_content_v1_msg() {
+        let env = envelope::Envelope::new(
+            "from_hex".to_string(),
+            "to_hex".to_string(),
+            "legacy text".to_string(),
+        );
+        // v1: parts is populated from msg field via EnvelopeWire conversion
+        // extract_content uses parts if non-empty
+        let content = extract_content(&env);
+        assert!(!content.is_empty(), "v1 content must be extracted");
+    }
 }

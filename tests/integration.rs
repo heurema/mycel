@@ -548,3 +548,72 @@ fn test_thread_fan_out_budget() {
     };
     assert!(result_ok.is_ok(), "10 members must be accepted");
 }
+
+// ---------------------------------------------------------------------------
+// Envelope v2 + msg_id dedup tests
+// ---------------------------------------------------------------------------
+
+/// Helper: insert a v2 envelope message using msg_id-based dedup (WHERE NOT EXISTS).
+/// Simulates what sync.rs does for inbound v2 Nostr messages.
+fn insert_v2_msg(
+    conn: &Connection,
+    nostr_id: &str,
+    sender: &str,
+    recipient: &str,
+    content: &str,
+    msg_id: &str,
+) -> bool {
+    let rows = conn.execute(
+        "INSERT OR IGNORE INTO messages
+            (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
+             created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
+         SELECT ?1, 'in', ?2, ?3, ?4, 'received', 'unread',
+                '2026-03-25T00:00:00Z', '2026-03-25T00:00:01Z', ?5, NULL, NULL, 'nostr', ?1
+         WHERE NOT EXISTS (SELECT 1 FROM messages WHERE msg_id = ?5 AND msg_id IS NOT NULL AND msg_id != '')",
+        rusqlite::params![nostr_id, sender, recipient, content, msg_id],
+    ).unwrap();
+    rows > 0
+}
+
+/// version 2 envelope: retry with new nostr_id but same msg_id is deduplicated.
+/// Inbox must show the message exactly once even after a retry publish.
+#[test]
+fn test_v2_msg_id_dedup_on_retry() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+
+    let sender = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
+    let recipient = "1122334455667788990011223344556677889900112233445566778899001122";
+    let msg_id = Uuid::now_v7().to_string();
+
+    // First delivery: original nostr event ID
+    let first_nostr_id = "nostr_event_id_original_aaaa1111";
+    let inserted = insert_v2_msg(&conn, first_nostr_id, sender, recipient, "hello from v2", &msg_id);
+    assert!(inserted, "first delivery must be inserted");
+
+    // Retry: same msg_id, different nostr event ID (outbox retry scenario)
+    let retry_nostr_id = "nostr_event_id_retry_bbbb2222";
+    let retry_inserted = insert_v2_msg(&conn, retry_nostr_id, sender, recipient, "hello from v2", &msg_id);
+    assert!(!retry_inserted, "v2 retry with same msg_id must be deduplicated (not inserted)");
+
+    // Inbox must show exactly one message
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE recipient = ?1",
+            rusqlite::params![recipient],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "dedup: inbox must show message exactly once, not twice");
+
+    // The stored message must be the first delivery's nostr_id
+    let stored_nostr_id: String = conn
+        .query_row(
+            "SELECT nostr_id FROM messages WHERE msg_id = ?1",
+            rusqlite::params![msg_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_nostr_id, first_nostr_id, "first delivery wins; retry is dropped");
+}
+
