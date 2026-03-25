@@ -61,6 +61,19 @@ impl Default for AckConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TransportKind {
+    #[default]
+    Nostr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TransportConfig {
+    #[serde(rename = "type", default)]
+    pub kind: TransportKind,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub relays: RelayConfig,
@@ -71,6 +84,9 @@ pub struct Config {
     /// Optional ACK protocol configuration.
     #[serde(default)]
     pub ack: AckConfig,
+    /// Optional transport configuration.
+    #[serde(default)]
+    pub transport: TransportConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -108,6 +124,7 @@ impl Default for Config {
             },
             local: LocalConfig::default(),
             ack: AckConfig::default(),
+            transport: TransportConfig::default(),
         }
     }
 }

@@ -20,6 +20,7 @@ nostr-sdk = { version = "0.44", features = ["nip59"] }
 
 # Async
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "signal"] }
+async-trait = "0.1"
 
 # CLI
 clap = { version = "4.6", features = ["derive"] }
