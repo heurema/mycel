@@ -1,6 +1,6 @@
 {
   "name": "mycel-agent",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Encrypted async mailbox for AI CLI agents",
   "license": "MIT",
   "repository": {
