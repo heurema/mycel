@@ -926,6 +926,18 @@ pub async fn flush_outbox(db: &Db, keys: &Keys, relay_urls: Vec<String>) -> Resu
     Ok(())
 }
 
+/// Return (nostr_id_hex, unix_timestamp) for all inbound messages.
+/// Used to build the negentropy known-items set for NIP-77 reconciliation.
+pub fn get_known_nostr_ids(conn: &Connection) -> Result<Vec<(String, u64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT nostr_id, CAST(strftime('%s', created_at) AS INTEGER) FROM messages WHERE direction = 'in'"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 /// Get sync cursor for a relay URL (0 if not set)
 pub fn get_sync_cursor(conn: &Connection, relay_url: &str) -> Result<u64> {
     let result = conn

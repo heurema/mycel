@@ -40,8 +40,22 @@ pub async fn sync_once(
     };
     let since = min_cursor.saturating_sub(SYNC_OVERLAP_SECS);
 
-    // 2. Fetch Gift Wraps (async), cap to MAX_EVENTS_PER_SYNC
-    let mut events = mycel_nostr::fetch_gift_wraps(client, relay_urls, &my_pubkey, since, timeout).await?;
+    // 2. Try NIP-77 Negentropy sync first, fallback to since-filter fetch
+    let mut events = match try_negentropy_sync(client, relay_urls, &my_pubkey, timeout).await {
+        Ok(evts) if !evts.is_empty() => {
+            tracing::info!("negentropy sync returned {} event(s)", evts.len());
+            evts
+        }
+        Ok(_) => {
+            // Negentropy returned empty — relay may support it but have nothing new,
+            // or our local DB is empty. Fallback to since-filter for bootstrapping.
+            mycel_nostr::fetch_gift_wraps(client, relay_urls, &my_pubkey, since, timeout).await?
+        }
+        Err(e) => {
+            tracing::debug!("negentropy unavailable, falling back to since-filter: {e}");
+            mycel_nostr::fetch_gift_wraps(client, relay_urls, &my_pubkey, since, timeout).await?
+        }
+    };
     let fetched = events.len();
     if events.len() > MAX_EVENTS_PER_SYNC {
         tracing::warn!(
@@ -102,6 +116,50 @@ pub async fn sync_once(
     }
 
     Ok(SyncReport { fetched, new_messages })
+}
+
+/// Try NIP-77 Negentropy reconciliation for Gift Wrap events.
+/// Returns fetched events on success, or an error if the relay doesn't support it.
+async fn try_negentropy_sync(
+    client: &Client,
+    relay_urls: &[String],
+    recipient: &PublicKey,
+    timeout: Duration,
+) -> Result<Vec<Event>> {
+    let filter = Filter::new()
+        .kind(Kind::GiftWrap)
+        .pubkey(*recipient);
+
+    let opts = SyncOptions::new()
+        .direction(SyncDirection::Down)
+        .initial_timeout(timeout);
+
+    let output = client
+        .sync_with(
+            relay_urls.iter().map(|s| s.as_str()),
+            filter.clone(),
+            &opts,
+        )
+        .await?;
+
+    // Reconciliation tells us which event IDs the relay has that we don't.
+    // We need to fetch the actual events for those IDs.
+    let remote_ids: Vec<EventId> = output.val.remote.into_iter().collect();
+    if remote_ids.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Fetch the missing events by ID
+    let id_filter = Filter::new().ids(remote_ids);
+    let events = client
+        .fetch_events_from(
+            relay_urls.iter().map(|s| s.as_str()),
+            id_filter,
+            timeout,
+        )
+        .await?;
+
+    Ok(events.into_iter().collect())
 }
 
 struct UnwrappedData {
