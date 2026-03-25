@@ -90,6 +90,28 @@ str_enum! {
     }
 }
 
+str_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AckStatus {
+        Pending => "pending",
+        Acknowledged => "acknowledged",
+        Failed => "failed",
+    }
+}
+
+impl Serialize for AckStatus {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AckStatus {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse::<Self>().map_err(serde::de::Error::custom)
+    }
+}
+
 /// V2 message identity metadata — the transport-independent fields added in schema v2.
 /// Used alongside `MessageRow` when inserting messages with full v2 envelope data.
 #[derive(Debug, Clone, Default)]
@@ -116,6 +138,13 @@ pub enum Part {
     /// Binary/file content part (skeleton for v0.4).
     #[serde(rename = "data")]
     DataPart { mime_type: String, data: String },
+    /// Application-level acknowledgement part.
+    #[serde(rename = "ack")]
+    AckPart {
+        original_msg_id: String,
+        status: AckStatus,
+        ack_ts: String,
+    },
 }
 
 /// Role of the agent or user sending the message.

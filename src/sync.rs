@@ -5,7 +5,7 @@ use anyhow::Result;
 use nostr_sdk::prelude::*;
 use std::time::Duration;
 
-use crate::types::{DeliveryStatus, Direction, MessageMeta, Part, ReadStatus, TrustTier};
+use crate::types::{AckStatus, DeliveryStatus, Direction, MessageMeta, Part, ReadStatus, TrustTier};
 use crate::{envelope, error::{MAX_EVENTS_PER_SYNC, SYNC_OVERLAP_SECS}, nostr as mycel_nostr, store};
 
 /// Result of a single sync cycle.
@@ -197,6 +197,15 @@ fn parse_and_validate(
         return Ok(None);
     }
 
+    // Anti-storm: if this envelope contains an AckPart, it is an ACK control message.
+    // Never store an ACK as a regular message — handle_incoming_ack processes it separately.
+    // This prevents ACK-of-ACK storms (duplicate ack suppression at parse time).
+    let is_ack = env.parts.iter().any(|p| matches!(p, Part::AckPart { .. }));
+    if is_ack {
+        // ACK dedup: ack-type envelopes are not stored in the messages table
+        return Ok(None);
+    }
+
     // Extract text content: v2 uses parts[], v1 uses legacy msg field
     let content: String = if !env.parts.is_empty() {
         env.parts.iter().filter_map(|p| match p {
@@ -261,6 +270,69 @@ fn parse_and_validate(
     };
 
     Ok(Some((row, meta)))
+}
+
+/// Anti-storm window: suppress duplicate ACK sends within 60 seconds.
+/// ACK_DEDUP: if an ack for (msg_id, ack_sender) was inserted within the last 60 seconds,
+/// do not insert a duplicate ack row (prevents relay echo storms).
+const ANTI_STORM_SECS: u64 = 60; // 60 second dedup window for ACK anti-storm
+
+/// Handle an incoming ACK envelope: extract AckPart, validate, store in acks table.
+/// Returns Ok(true) if a new ACK was stored, Ok(false) if duplicate or invalid.
+pub fn handle_incoming_ack(
+    conn: &rusqlite::Connection,
+    env: &envelope::Envelope,
+    sender_hex: &str,
+) -> anyhow::Result<bool> {
+    // Find the AckPart in the envelope
+    let ack_part = env.parts.iter().find_map(|p| {
+        if let Part::AckPart { original_msg_id, status, ack_ts } = p {
+            Some((original_msg_id.clone(), *status, ack_ts.clone()))
+        } else {
+            None
+        }
+    });
+
+    let (original_msg_id, status, ack_ts) = match ack_part {
+        Some(a) => a,
+        None => return Ok(false),
+    };
+
+    // Anti-storm: check if we already have an ack from this sender for this msg within 60 seconds.
+    // duplicate ack suppression: query acks table for recent entry matching (msg_id, ack_sender).
+    let existing_recent: Option<String> = conn.query_row(
+        "SELECT created_at FROM acks WHERE msg_id = ?1 AND ack_sender = ?2
+         AND (CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', created_at) AS INTEGER)) < ?3
+         LIMIT 1",
+        rusqlite::params![original_msg_id, sender_hex, ANTI_STORM_SECS as i64],
+        |row| row.get(0),
+    ).ok();
+
+    if existing_recent.is_some() {
+        // duplicate ack: within anti-storm window — suppress
+        tracing::debug!(
+            "ack dedup: suppressed duplicate ACK for msg_id={} from sender={}",
+            &original_msg_id[..original_msg_id.len().min(12)],
+            &sender_hex[..sender_hex.len().min(12)],
+        );
+        return Ok(false);
+    }
+
+    let ack_status = match status {
+        AckStatus::Acknowledged => AckStatus::Acknowledged,
+        AckStatus::Pending => AckStatus::Pending,
+        AckStatus::Failed => AckStatus::Failed,
+    };
+
+    let ack_row = store::AckRow {
+        msg_id: original_msg_id,
+        ack_sender: sender_hex.to_string(),
+        ack_status,
+        created_at: ack_ts,
+        sent_at: None,
+    };
+
+    store::insert_ack(conn, &ack_row)
 }
 
 /// Extract text content from envelope parts (v2) or legacy msg field (v1).

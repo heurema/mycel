@@ -33,6 +33,34 @@ pub struct LocalConfig {
     pub agents: HashMap<String, LocalAgentEntry>,
 }
 
+/// Configuration for application-level ACK protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AckConfig {
+    /// Whether to automatically send ACKs after receiving messages.
+    #[serde(default = "default_ack_enabled")]
+    pub enabled: bool,
+    /// Minimum interval in seconds between ACKs for the same message (anti-storm).
+    #[serde(default = "default_ack_min_interval_secs")]
+    pub min_interval_secs: u64,
+}
+
+fn default_ack_enabled() -> bool {
+    true
+}
+
+fn default_ack_min_interval_secs() -> u64 {
+    60
+}
+
+impl Default for AckConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_ack_enabled(),
+            min_interval_secs: default_ack_min_interval_secs(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub relays: RelayConfig,
@@ -40,6 +68,9 @@ pub struct Config {
     /// Optional local transport section.
     #[serde(default)]
     pub local: LocalConfig,
+    /// Optional ACK protocol configuration.
+    #[serde(default)]
+    pub ack: AckConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -76,6 +107,7 @@ impl Default for Config {
                 storage: IdentityStorage::Keychain,
             },
             local: LocalConfig::default(),
+            ack: AckConfig::default(),
         }
     }
 }

@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::os::unix::fs::PermissionsExt;
 
 use crate::error::MAX_RETRIES;
-use crate::types::{DeliveryStatus, Direction, ReadStatus, TrustTier};
+use crate::types::{AckStatus, DeliveryStatus, Direction, ReadStatus, TrustTier};
 
 pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS messages (
@@ -77,7 +77,17 @@ CREATE TABLE IF NOT EXISTS outbox (
 CREATE INDEX IF NOT EXISTS idx_outbox_status_retry
     ON outbox(status, next_retry_at);
 
-PRAGMA user_version = 3;
+CREATE TABLE IF NOT EXISTS acks (
+    msg_id      TEXT PRIMARY KEY,
+    ack_sender  TEXT NOT NULL,
+    ack_status  TEXT NOT NULL DEFAULT 'pending',
+    created_at  TEXT NOT NULL,
+    sent_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_acks_msg_id ON acks(msg_id);
+
+PRAGMA user_version = 4;
 ";
 
 /// Migration script to upgrade a user_version=1 database to user_version=2.
@@ -124,6 +134,21 @@ const MIGRATION_V1_TO_V3: &[&str] = &[
     "PRAGMA user_version = 3",
 ];
 
+/// Migration script to upgrade a user_version=3 database to user_version=4.
+/// Adds the acks table for application-level acknowledgement tracking.
+/// MIGRATION_V3_TO_V4: applied when user_version < 4.
+const MIGRATION_V3_TO_V4: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS acks (
+        msg_id      TEXT PRIMARY KEY,
+        ack_sender  TEXT NOT NULL,
+        ack_status  TEXT NOT NULL DEFAULT 'pending',
+        created_at  TEXT NOT NULL,
+        sent_at     TEXT
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_acks_msg_id ON acks(msg_id)",
+    "PRAGMA user_version = 4",
+];
+
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
@@ -150,6 +175,11 @@ pub fn open(path: &Path) -> Result<Connection> {
     // For databases at version < 3 (including newly migrated v1→v2), apply v3 migration.
     if existing_version < 3 {
         migrate_to_v3(&conn)?;
+    }
+
+    // For databases at version < 4, apply v4 migration (adds acks table).
+    if existing_version < 4 {
+        migrate_to_v4(&conn)?;
     }
 
     // Restrict DB file to owner-only access (0o600)
@@ -186,6 +216,15 @@ fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
 /// Idempotent: all steps use IF NOT EXISTS clauses.
 fn migrate_to_v3(conn: &Connection) -> Result<()> {
     for stmt in MIGRATION_V1_TO_V3 {
+        conn.execute_batch(stmt)?;
+    }
+    Ok(())
+}
+
+/// Applies the migration to v4: adds acks table.
+/// Idempotent: all steps use IF NOT EXISTS clauses.
+fn migrate_to_v4(conn: &Connection) -> Result<()> {
+    for stmt in MIGRATION_V3_TO_V4 {
         conn.execute_batch(stmt)?;
     }
     Ok(())
@@ -273,6 +312,59 @@ pub struct OutboxRow {
     pub last_attempt_at: Option<String>,
     pub next_retry_at: Option<String>,
     pub sent_at: Option<String>,
+}
+
+/// A row in the acks table — tracks application-level acknowledgements sent/received.
+#[derive(Debug, Clone)]
+pub struct AckRow {
+    /// The msg_id of the message being acknowledged.
+    pub msg_id: String,
+    /// The pubkey (hex) of the party sending the ACK.
+    pub ack_sender: String,
+    /// Current status of this ACK.
+    pub ack_status: AckStatus,
+    /// ISO 8601 UTC timestamp when the ACK was created locally.
+    pub created_at: String,
+    /// ISO 8601 UTC timestamp when the ACK was sent, if sent.
+    pub sent_at: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Ack operations
+// ---------------------------------------------------------------------------
+
+/// Insert an ACK row. Returns Ok(true) if inserted, Ok(false) if duplicate (INSERT OR IGNORE).
+pub fn insert_ack(conn: &Connection, ack: &AckRow) -> Result<bool> {
+    let rows = conn.execute(
+        "INSERT OR IGNORE INTO acks (msg_id, ack_sender, ack_status, created_at, sent_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            ack.msg_id,
+            ack.ack_sender,
+            ack.ack_status,
+            ack.created_at,
+            ack.sent_at,
+        ],
+    )?;
+    Ok(rows > 0)
+}
+
+/// Return all ACK rows in 'pending' status.
+pub fn get_pending_acks(conn: &Connection) -> Result<Vec<AckRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT msg_id, ack_sender, ack_status, created_at, sent_at
+         FROM acks WHERE ack_status = 'pending'",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(AckRow {
+            msg_id: row.get(0)?,
+            ack_sender: row.get(1)?,
+            ack_status: row.get(2)?,
+            created_at: row.get(3)?,
+            sent_at: row.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 // ---------------------------------------------------------------------------
@@ -1249,7 +1341,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3, "user_version should be 3");
+        assert_eq!(version, 4, "user_version should be 4");
     }
 
     #[test]
@@ -1387,7 +1479,7 @@ mod tests {
 
         // Step 3: Verify migration happened
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 3, "user_version must be 3 after migration");
+        assert_eq!(version, 4, "user_version must be 4 after migration");
 
         let msg_id: String = conn
             .query_row("SELECT msg_id FROM messages WHERE nostr_id = 'ev_abc'", [], |r| r.get(0))

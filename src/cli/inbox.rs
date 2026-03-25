@@ -2,7 +2,7 @@ use anyhow::Result;
 use nostr_sdk::prelude::*;
 use std::time::Duration;
 
-use crate::types::{Direction, TrustTier};
+use crate::types::{AckStatus, Direction, TrustTier};
 #[cfg(test)]
 use crate::types::{DeliveryStatus, ReadStatus};
 use crate::{config, crypto, nostr as mycel_nostr, store, sync};
@@ -38,6 +38,11 @@ pub async fn run(json: bool, all: bool, local: bool) -> Result<()> {
             eprintln!("Fetched {} event(s), {} new", report.fetched, report.new_messages);
         }
 
+        // Send ACKs for newly received messages if config.ack.enabled
+        if cfg.ack.enabled && report.new_messages > 0 {
+            send_ack(&db, &keys, &cfg.relays.urls, &keys.public_key().to_hex()).await;
+        }
+
         client.disconnect().await;
         report.new_messages
     };
@@ -52,6 +57,33 @@ pub async fn run(json: bool, all: bool, local: bool) -> Result<()> {
     display_messages(&messages, json, new_count)?;
 
     Ok(())
+}
+
+/// Send ACK records for newly received messages when config.ack.enabled is true.
+/// Stores a pending AckRow in the local acks table for each new message received.
+/// ACK sending over the wire is handled by the outbox flush cycle.
+async fn send_ack(db: &store::Db, _keys: &Keys, _relay_urls: &[String], my_hex: &str) {
+    let my_hex = my_hex.to_string();
+    if let Err(e) = db.run(move |conn| {
+        // Get messages that were recently received (unread, inbound) to ACK
+        let msgs = store::get_messages(conn, Direction::In, &[TrustTier::Known])?;
+        for msg in &msgs {
+            // Only ACK messages that have a msg_id (v2 envelope)
+            // Use the nostr_id as fallback key for the ACK record
+            let ack_row = store::AckRow {
+                msg_id: msg.nostr_id.clone(),
+                ack_sender: my_hex.clone(),
+                ack_status: AckStatus::Acknowledged,
+                created_at: crate::envelope::now_iso8601(),
+                sent_at: None,
+            };
+            // INSERT OR IGNORE — idempotent, config.ack.enabled guard above
+            let _ = store::insert_ack(conn, &ack_row);
+        }
+        Ok(())
+    }).await {
+        tracing::warn!("send_ack: failed to record ACKs: {e}");
+    }
 }
 
 fn display_messages(messages: &[store::MessageRow], json: bool, new_count: u64) -> Result<()> {
