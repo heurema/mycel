@@ -77,6 +77,7 @@ str_enum! {
         Delivered => "delivered",
         Failed => "failed",
         Blocked => "blocked",
+        Confirmed => "confirmed",
     }
 }
 
@@ -167,10 +168,17 @@ mod tests {
             DeliveryStatus::Delivered,
             DeliveryStatus::Failed,
             DeliveryStatus::Blocked,
+            DeliveryStatus::Confirmed,
         ] {
             let s = status.to_string();
             assert_eq!(s.parse::<DeliveryStatus>().unwrap(), status);
         }
+    }
+
+    #[test]
+    fn fn_delivery_status_confirmed() {
+        assert_eq!(DeliveryStatus::Confirmed.to_string(), "confirmed");
+        assert_eq!("confirmed".parse::<DeliveryStatus>().unwrap(), DeliveryStatus::Confirmed);
     }
 
     #[test]

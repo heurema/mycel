@@ -1,11 +1,14 @@
 use anyhow::Result;
+use nostr_sdk::prelude::*;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use crate::error::MAX_RETRIES;
 use crate::types::{DeliveryStatus, Direction, ReadStatus, TrustTier};
 
 pub const SCHEMA: &str = "
@@ -57,7 +60,24 @@ CREATE TABLE IF NOT EXISTS threads (
     updated_at  TEXT NOT NULL
 );
 
-PRAGMA user_version = 2;
+CREATE TABLE IF NOT EXISTS outbox (
+    msg_id          TEXT PRIMARY KEY,
+    recipient_hex   TEXT NOT NULL,
+    envelope_json   TEXT NOT NULL,
+    relay_urls      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    ok_relay_count  INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    last_attempt_at TEXT,
+    next_retry_at   TEXT,
+    sent_at         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_status_retry
+    ON outbox(status, next_retry_at);
+
+PRAGMA user_version = 3;
 ";
 
 /// Migration script to upgrade a user_version=1 database to user_version=2.
@@ -83,6 +103,27 @@ const MIGRATION_V1_TO_V2: &[&str] = &[
     "PRAGMA user_version = 2",
 ];
 
+/// Migration script to upgrade a user_version=1 or user_version=2 database to user_version=3.
+/// Adds the outbox table and index for store-and-retry delivery.
+/// MIGRATION_V1_TO_V3: applied when user_version < 3 (after v2 migration if needed).
+const MIGRATION_V1_TO_V3: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS outbox (
+        msg_id          TEXT PRIMARY KEY,
+        recipient_hex   TEXT NOT NULL,
+        envelope_json   TEXT NOT NULL,
+        relay_urls      TEXT NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'pending',
+        retry_count     INTEGER NOT NULL DEFAULT 0,
+        ok_relay_count  INTEGER NOT NULL DEFAULT 0,
+        created_at      TEXT NOT NULL,
+        last_attempt_at TEXT,
+        next_retry_at   TEXT,
+        sent_at         TEXT
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_outbox_status_retry ON outbox(status, next_retry_at)",
+    "PRAGMA user_version = 3",
+];
+
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
@@ -97,13 +138,18 @@ pub fn open(path: &Path) -> Result<Connection> {
         migrate_v1_to_v2(&conn)?;
     }
 
-    // Apply the full v2 schema (all CREATE TABLE/INDEX IF NOT EXISTS are idempotent).
+    // Apply the full v3 schema (all CREATE TABLE/INDEX IF NOT EXISTS are idempotent).
     conn.execute_batch(SCHEMA)?;
 
     // For fresh databases (version=0), SCHEMA already created the v2 layout.
     // Migration is still safe (duplicate-column ALTERs are caught and skipped).
     if existing_version == 0 {
         migrate_v1_to_v2(&conn)?;
+    }
+
+    // For databases at version < 3 (including newly migrated v1→v2), apply v3 migration.
+    if existing_version < 3 {
+        migrate_to_v3(&conn)?;
     }
 
     // Restrict DB file to owner-only access (0o600)
@@ -132,6 +178,15 @@ fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Applies the migration to v3: adds outbox table and index.
+/// Idempotent: all steps use IF NOT EXISTS clauses.
+fn migrate_to_v3(conn: &Connection) -> Result<()> {
+    for stmt in MIGRATION_V1_TO_V3 {
+        conn.execute_batch(stmt)?;
     }
     Ok(())
 }
@@ -202,6 +257,22 @@ pub struct ContactRow {
     pub alias: Option<String>,
     pub trust_tier: TrustTier,
     pub added_at: String,
+}
+
+/// A row in the outbox table — tracks pending/sent/failed outbound Nostr messages.
+#[derive(Debug, Clone)]
+pub struct OutboxRow {
+    pub msg_id: String,
+    pub recipient_hex: String,
+    pub envelope_json: String,
+    pub relay_urls: String,   // JSON array of relay URL strings
+    pub status: String,       // 'pending' | 'sent' | 'failed_permanent'
+    pub retry_count: u32,
+    pub ok_relay_count: u32,
+    pub created_at: String,
+    pub last_attempt_at: Option<String>,
+    pub next_retry_at: Option<String>,
+    pub sent_at: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -648,6 +719,213 @@ pub fn get_transport_msg_id_by_msg_id(conn: &Connection, msg_id: &str) -> Result
     Ok(result)
 }
 
+// ---------------------------------------------------------------------------
+// Outbox operations
+// ---------------------------------------------------------------------------
+
+/// Compute next retry timestamp as ISO8601 UTC string.
+/// Formula: now + min(30 * 2^retry_count, 3600) seconds (exponential backoff, capped at 3600).
+pub fn compute_next_retry_at(retry_count: u32) -> String {
+    // 30 * 2^retry_count, capped at 3600
+    let backoff_secs: u64 = (30u64.saturating_mul(1u64 << retry_count.min(31))).min(3600);
+    use std::time::SystemTime;
+    let now_secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    crate::envelope::timestamp_to_iso8601(now_secs + backoff_secs)
+}
+
+/// Insert an outbox row for a pending outbound message.
+pub fn insert_outbox(conn: &Connection, row: &OutboxRow) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO outbox
+            (msg_id, recipient_hex, envelope_json, relay_urls, status, retry_count,
+             ok_relay_count, created_at, last_attempt_at, next_retry_at, sent_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![
+            row.msg_id,
+            row.recipient_hex,
+            row.envelope_json,
+            row.relay_urls,
+            row.status,
+            row.retry_count,
+            row.ok_relay_count,
+            row.created_at,
+            row.last_attempt_at,
+            row.next_retry_at,
+            row.sent_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Update outbox row to sent status after successful relay publish.
+pub fn update_outbox_sent(conn: &Connection, msg_id: &str, ok_relay_count: u32, sent_at: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE outbox SET status = 'sent', sent_at = ?1, ok_relay_count = ?2,
+                           last_attempt_at = ?1
+         WHERE msg_id = ?3",
+        rusqlite::params![sent_at, ok_relay_count, msg_id],
+    )?;
+    Ok(())
+}
+
+/// Update outbox row on relay failure: increment retry_count and set next_retry_at.
+pub fn update_outbox_retry(conn: &Connection, msg_id: &str, retry_count: u32, next_retry_at: &str, now: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE outbox SET retry_count = ?1, next_retry_at = ?2, last_attempt_at = ?3
+         WHERE msg_id = ?4",
+        rusqlite::params![retry_count, next_retry_at, now, msg_id],
+    )?;
+    Ok(())
+}
+
+/// Mark an outbox row as failed_permanent (max retries exceeded).
+pub fn update_outbox_failed(conn: &Connection, msg_id: &str, now: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE outbox SET status = 'failed_permanent', last_attempt_at = ?1 WHERE msg_id = ?2",
+        rusqlite::params![now, msg_id],
+    )?;
+    Ok(())
+}
+
+/// Flush pending outbox rows: retry any pending messages whose next_retry_at is in the past.
+/// Also runs cleanup: delete sent >7d and failed_permanent >30d.
+pub async fn flush_outbox(db: &Db, keys: &Keys, relay_urls: Vec<String>) -> Result<()> {
+    use crate::nostr as mycel_nostr;
+    use crate::envelope::Envelope;
+
+    // Cleanup: DELETE FROM outbox WHERE status='sent' AND created_at < datetime('now', '-7 days')
+    let relay_urls_clone = relay_urls.clone();
+    db.run(move |conn| {
+        // cleanup sent >7 days
+        conn.execute(
+            "DELETE FROM outbox WHERE status = 'sent' AND created_at < datetime('now', '-7 days')",
+            [],
+        )?;
+        // cleanup failed_permanent >30 days
+        conn.execute(
+            "DELETE FROM outbox WHERE status = 'failed_permanent' AND created_at < datetime('now', '-30 days')",
+            [],
+        )?;
+        Ok(())
+    }).await?;
+
+    // Fetch pending rows due for retry
+    let pending_rows: Vec<OutboxRow> = db.run(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT msg_id, recipient_hex, envelope_json, relay_urls, status, retry_count,
+                    ok_relay_count, created_at, last_attempt_at, next_retry_at, sent_at
+             FROM outbox
+             WHERE status = 'pending'
+               AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(OutboxRow {
+                msg_id: row.get(0)?,
+                recipient_hex: row.get(1)?,
+                envelope_json: row.get(2)?,
+                relay_urls: row.get(3)?,
+                status: row.get(4)?,
+                retry_count: row.get::<_, u32>(5)?,
+                ok_relay_count: row.get::<_, u32>(6)?,
+                created_at: row.get(7)?,
+                last_attempt_at: row.get(8)?,
+                next_retry_at: row.get(9)?,
+                sent_at: row.get(10)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }).await?;
+
+    if pending_rows.is_empty() {
+        return Ok(());
+    }
+
+    // Build a Nostr client for publishing
+    let timeout = Duration::from_secs(10);
+    let client = match mycel_nostr::build_client(keys.clone(), &relay_urls).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("flush_outbox: could not connect to relays: {e}");
+            return Ok(());
+        }
+    };
+
+    for row in pending_rows {
+        let now = crate::envelope::now_iso8601();
+
+        // Deserialize envelope to rebuild rumor
+        let env: Envelope = match serde_json::from_str(&row.envelope_json) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("flush_outbox: invalid envelope_json for {}: {e}", row.msg_id);
+                continue;
+            }
+        };
+
+        // Parse recipient pubkey
+        let recipient_pk = match PublicKey::from_hex(&row.recipient_hex) {
+            Ok(pk) => pk,
+            Err(e) => {
+                tracing::warn!("flush_outbox: invalid recipient for {}: {e}", row.msg_id);
+                continue;
+            }
+        };
+
+        // Re-serialize envelope for the rumor content (same msg_id, fresh gift-wrap)
+        let env_json = match serde_json::to_string(&env) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!("flush_outbox: serialize envelope for {}: {e}", row.msg_id);
+                continue;
+            }
+        };
+
+        // Rebuild rumor from envelope_json
+        let rumor: UnsignedEvent =
+            EventBuilder::new(Kind::PrivateDirectMessage, &env_json).build(keys.public_key());
+
+        // Parse stored relay_urls (JSON array), fall back to config relay_urls
+        let publish_relays: Vec<String> = serde_json::from_str(&row.relay_urls)
+            .unwrap_or_else(|_| relay_urls.clone());
+
+        // Attempt publish
+        let result = mycel_nostr::publish_gift_wrap(&client, &publish_relays, &recipient_pk, rumor, timeout).await;
+
+        let new_retry_count = row.retry_count + 1;
+        let msg_id = row.msg_id.clone();
+
+        match result {
+            Ok((_event_id, ok_count)) if ok_count > 0 => {
+                let now_clone = now.clone();
+                db.run(move |conn| {
+                    update_outbox_sent(conn, &msg_id, ok_count as u32, &now_clone)
+                }).await?;
+            }
+            _ => {
+                // Failure or zero relays accepted
+                if new_retry_count >= MAX_RETRIES {
+                    let now_clone = now.clone();
+                    db.run(move |conn| {
+                        update_outbox_failed(conn, &msg_id, &now_clone)
+                    }).await?;
+                } else {
+                    let next_retry = compute_next_retry_at(new_retry_count);
+                    let now_clone = now.clone();
+                    db.run(move |conn| {
+                        update_outbox_retry(conn, &msg_id, new_retry_count, &next_retry, &now_clone)
+                    }).await?;
+                }
+            }
+        }
+    }
+
+    client.disconnect().await;
+    Ok(())
+}
+
 /// Get sync cursor for a relay URL (0 if not set)
 pub fn get_sync_cursor(conn: &Connection, relay_url: &str) -> Result<u64> {
     let result = conn
@@ -959,7 +1237,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2, "user_version should be 2");
+        assert_eq!(version, 3, "user_version should be 3");
     }
 
     #[test]
@@ -1097,7 +1375,7 @@ mod tests {
 
         // Step 3: Verify migration happened
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 2, "user_version must be 2 after migration");
+        assert_eq!(version, 3, "user_version must be 3 after migration");
 
         let msg_id: String = conn
             .query_row("SELECT msg_id FROM messages WHERE nostr_id = 'ev_abc'", [], |r| r.get(0))

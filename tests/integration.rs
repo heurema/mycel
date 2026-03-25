@@ -16,6 +16,27 @@ use std::time::Duration;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
+// Outbox schema (outbox table for store-and-retry reliability tests)
+// ---------------------------------------------------------------------------
+
+const OUTBOX_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS outbox (
+    msg_id          TEXT PRIMARY KEY,
+    recipient_hex   TEXT NOT NULL,
+    envelope_json   TEXT NOT NULL,
+    relay_urls      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    ok_relay_count  INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    last_attempt_at TEXT,
+    next_retry_at   TEXT,
+    sent_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_status_retry ON outbox(status, next_retry_at);
+";
+
+// ---------------------------------------------------------------------------
 // DB schema (copy of store::SCHEMA for integration test isolation)
 // ---------------------------------------------------------------------------
 

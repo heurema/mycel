@@ -21,6 +21,11 @@ pub async fn run(json: bool, all: bool, local: bool) -> Result<()> {
         let relay_urls = &cfg.relays.urls;
         let timeout = Duration::from_secs(cfg.relays.timeout_secs);
 
+        // Flush outbox (retry pending outbound messages) before fetching inbox
+        if let Err(e) = store::flush_outbox(&db, &keys, relay_urls.clone()).await {
+            tracing::warn!("flush_outbox failed: {e}");
+        }
+
         let client = mycel_nostr::build_client(keys.clone(), relay_urls)
             .await
             .map_err(|e| anyhow::anyhow!("{e} — could not connect to relay; check your network connection"))?;

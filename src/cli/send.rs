@@ -27,7 +27,13 @@ pub async fn run(recipient: &str, message: &str, local: bool) -> Result<()> {
     if local || recipient == "self" {
         run_local(recipient, message, &cfg, &keys, &sender_hex).await
     } else {
-        run_nostr(recipient, message, &cfg, &keys, &sender_hex).await
+        // Flush outbox (retry pending messages) before sending a new one
+        let db = store::Db::open(&config::data_dir()?.join("mycel.db"))?;
+        let flush_relay_urls = cfg.relays.urls.clone();
+        if let Err(e) = store::flush_outbox(&db, &keys, flush_relay_urls).await {
+            tracing::warn!("flush_outbox failed: {e}");
+        }
+        run_nostr(recipient, message, &cfg, &keys, &sender_hex, db).await
     }
 }
 
@@ -234,13 +240,13 @@ async fn run_nostr(
     cfg: &config::Config,
     keys: &Keys,
     sender_hex: &str,
+    db: store::Db,
 ) -> Result<()> {
     // 3. Relay config
     let timeout = Duration::from_secs(cfg.relays.timeout_secs);
     let relay_urls = cfg.relays.urls.clone();
 
-    // 4. Open DB and resolve recipient
-    let db = store::Db::open(&config::data_dir()?.join("mycel.db"))?;
+    // 4. Resolve recipient
     let recipient_str = recipient.to_string();
     let recipient_hex = db.run(move |conn| {
         resolve_address_to_hex(conn, &recipient_str)
@@ -249,11 +255,39 @@ async fn run_nostr(
 
     // 5. Build mycel envelope
     let env = envelope::Envelope::new(sender_hex.to_string(), recipient_hex.clone(), message.to_string());
-    let env_json = serde_json::to_string(&env)?;
+    let envelope_json = serde_json::to_string(&env)?;
+
+    // Generate a msg_id for this outbound message
+    let msg_id = if env.msg_id.is_empty() {
+        uuid::Uuid::now_v7().to_string()
+    } else {
+        env.msg_id.clone()
+    };
+
+    // 5a. INSERT outbox row before network attempt (store-and-forward)
+    let relay_urls_json = serde_json::to_string(&relay_urls)?;
+    let now = now_iso8601();
+    {
+        let outbox_row = store::OutboxRow {
+            msg_id: msg_id.clone(),
+            recipient_hex: recipient_hex.clone(),
+            envelope_json: envelope_json.clone(),
+            relay_urls: relay_urls_json,
+            status: "pending".to_string(),
+            retry_count: 0,
+            ok_relay_count: 0,
+            created_at: now.clone(),
+            last_attempt_at: None,
+            next_retry_at: None,
+            sent_at: None,
+        };
+        let outbox_row_clone = outbox_row.clone();
+        db.run(move |conn| store::insert_outbox(conn, &outbox_row_clone)).await?;
+    }
 
     // 6. Build rumor (unsigned event carrying the envelope)
     let rumor: UnsignedEvent =
-        EventBuilder::new(Kind::PrivateDirectMessage, &env_json).build(keys.public_key());
+        EventBuilder::new(Kind::PrivateDirectMessage, &envelope_json).build(keys.public_key());
 
     // 7. Connect to relays and publish Gift Wrap
     let client = mycel_nostr::build_client(keys.clone(), &relay_urls)
@@ -273,18 +307,38 @@ async fn run_nostr(
         }
     };
 
-    let (event_id, ok_count) = mycel_nostr::publish_gift_wrap(&client, &publish_relays, &recipient_pk, rumor, timeout)
-        .await
+    let publish_result = mycel_nostr::publish_gift_wrap(&client, &publish_relays, &recipient_pk, rumor, timeout).await;
+
+    // 8. Update outbox status based on publish result
+    let now2 = now_iso8601();
+    match &publish_result {
+        Ok((_event_id, ok_count)) if *ok_count > 0 => {
+            // UPDATE outbox SET status='sent'
+            let mid = msg_id.clone();
+            let cnt = *ok_count as u32;
+            let ts = now2.clone();
+            db.run(move |conn| store::update_outbox_sent(conn, &mid, cnt, &ts)).await?;
+        }
+        _ => {
+            // Failure: increment retry_count and set next_retry_at
+            let new_retry_count = 1u32;
+            let next_retry_at = store::compute_next_retry_at(new_retry_count);
+            let mid = msg_id.clone();
+            let ts = now2.clone();
+            db.run(move |conn| store::update_outbox_retry(conn, &mid, new_retry_count, &next_retry_at, &ts)).await?;
+        }
+    }
+
+    let (event_id, ok_count) = publish_result
         .map_err(|e| anyhow::anyhow!("{e} — relay unreachable; check your network connection"))?;
 
     let total = publish_relays.len();
     let failed = total.saturating_sub(ok_count);
 
-    // 8. Determine delivery status (C1: 1 relay ack = success)
+    // 9. Determine delivery status (C1: 1 relay ack = success)
     let delivery_status = if ok_count > 0 { DeliveryStatus::Delivered } else { DeliveryStatus::Failed };
 
-    // 9. Store in outbox
-    let now = now_iso8601();
+    // 10. Store in messages table
     let msg_row = store::MessageRow {
         nostr_id: event_id.to_hex(),
         direction: Direction::Out,
@@ -299,7 +353,7 @@ async fn run_nostr(
     };
     db.run(move |conn| store::insert_message(conn, &msg_row).map(|_| ())).await?;
 
-    // 10. Disconnect and print result
+    // 11. Disconnect and print result
     client.disconnect().await;
 
     if ok_count == 0 {

@@ -34,6 +34,9 @@ pub enum MycelError {
 /// Max message payload size (C7)
 pub const MAX_MESSAGE_SIZE: usize = 8192;
 
+/// Maximum number of outbox delivery retries before marking a message as failed_permanent.
+pub const MAX_RETRIES: u32 = 10;
+
 /// Sync cursor overlap window in seconds (C2)
 /// NIP-59 Gift Wrap randomises the outer event timestamp by up to ±2 days
 /// for metadata privacy. The overlap must cover this window so that
