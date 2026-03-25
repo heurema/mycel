@@ -101,6 +101,7 @@ struct Config {
 }
 
 const DEFAULT_RELAYS: &[&str] = &[
+    "wss://relay.mycel.run",
     "wss://nos.lol",
     "wss://relay.damus.io",
     "wss://relay.nostr.band",
@@ -367,12 +368,12 @@ type = "local"
 // ---------------------------------------------------------------------------
 
 #[test]
-fn default_relay_count_is_exactly_7() {
+fn default_relay_count_is_exactly_8() {
     let cfg = Config::default();
     assert_eq!(
         cfg.relays.urls.len(),
-        7,
-        "DEFAULT_RELAYS must have exactly 7 entries, got {}",
+        8,
+        "DEFAULT_RELAYS must have exactly 8 entries, got {}",
         cfg.relays.urls.len()
     );
 }

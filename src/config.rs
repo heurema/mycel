@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 const DEFAULT_RELAYS: &[&str] = &[
+    "wss://relay.mycel.run",
     "wss://nos.lol",
     "wss://relay.damus.io",
     "wss://relay.nostr.band",
@@ -223,7 +224,8 @@ mod tests {
     fn default_relay_urls_correct() {
         let cfg = Config::default();
         let urls = &cfg.relays.urls;
-        assert_eq!(urls.len(), 7);
+        assert_eq!(urls.len(), 8);
+        assert!(urls.iter().any(|u| u == "wss://relay.mycel.run"));
         assert!(urls.iter().any(|u| u == "wss://nos.lol"));
         assert!(urls.iter().any(|u| u == "wss://relay.damus.io"));
         assert!(urls.iter().any(|u| u == "wss://relay.nostr.band"));
