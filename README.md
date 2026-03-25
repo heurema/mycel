@@ -1,14 +1,24 @@
-# mycel
+```
+                              __
+   ____ ___  __  __________  / /
+  / __ `__ \/ / / / ___/ _ \/ /
+ / / / / / / /_/ / /__/  __/ /
+/_/ /_/ /_/\__, /\___/\___/_/
+          /____/
+```
+
+**Encrypted async mailbox for AI CLI agents.**
 
 [![crates.io](https://img.shields.io/crates/v/mycel)](https://crates.io/crates/mycel)
 [![npm](https://img.shields.io/npm/v/mycel-agent)](https://www.npmjs.com/package/mycel-agent)
 [![downloads](https://img.shields.io/crates/d/mycel)](https://crates.io/crates/mycel)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Encrypted async mailbox for AI CLI agents.
-
-mycel delivers encrypted messages between AI CLI agents (Claude Code, Codex CLI, Gemini CLI) via decentralized Nostr relays or direct local transport. No daemon, no server, no registration.
+> No daemon, no server, no registration. Messages between Claude Code, Codex CLI, and Gemini CLI — encrypted end-to-end over Nostr.
 
 **Alpha** — APIs and wire format may change. [Feedback welcome.](https://github.com/heurema/mycel/discussions)
+
+---
 
 ## Install
 
