@@ -203,7 +203,12 @@ pub async fn publish_inbox_relay_list(
 
     tokio::time::timeout(timeout, client.send_event_builder(builder))
         .await
-        .map_err(|_| anyhow::anyhow!("publish inbox relay list timed out after {}s", timeout.as_secs()))?
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "publish inbox relay list timed out after {}s",
+                timeout.as_secs()
+            )
+        })?
         .map_err(|e| anyhow::anyhow!("publish inbox relay list failed: {e}"))?;
 
     client.disconnect().await;
@@ -246,10 +251,7 @@ pub async fn fetch_inbox_relays(
 
 /// Unwrap a gift wrap event using the client's signer.
 #[allow(dead_code)]
-pub async fn unwrap_gift_wrap(
-    client: &Client,
-    gift_wrap: &Event,
-) -> Result<UnwrappedGift> {
+pub async fn unwrap_gift_wrap(client: &Client, gift_wrap: &Event) -> Result<UnwrappedGift> {
     let unwrapped = client.unwrap_gift_wrap(gift_wrap).await?;
     Ok(unwrapped)
 }
@@ -293,10 +295,10 @@ mod tests {
         let receiver_keys = Keys::generate();
 
         // Build a rumor (unsigned event carrying the mycel envelope)
-        let content = r#"{"v":1,"from":"sender","to":"receiver","msg":"hello","ts":"2026-03-20T00:00:00Z"}"#;
+        let content =
+            r#"{"v":1,"from":"sender","to":"receiver","msg":"hello","ts":"2026-03-20T00:00:00Z"}"#;
         let rumor: UnsignedEvent =
-            EventBuilder::new(Kind::PrivateDirectMessage, content)
-                .build(sender_keys.public_key());
+            EventBuilder::new(Kind::PrivateDirectMessage, content).build(sender_keys.public_key());
 
         // Wrap
         let gift_wrap: Event =
@@ -330,8 +332,7 @@ mod tests {
         // 2. Verify gift_wrap API: wrap a rumor
         let content = "test message content";
         let rumor: UnsignedEvent =
-            EventBuilder::new(Kind::PrivateDirectMessage, content)
-                .build(keys.public_key());
+            EventBuilder::new(Kind::PrivateDirectMessage, content).build(keys.public_key());
 
         let gift_wrap_event =
             EventBuilder::gift_wrap(&keys, &receiver_keys.public_key(), rumor, [])

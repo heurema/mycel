@@ -2,6 +2,7 @@ use anyhow::Result;
 use nostr_sdk::prelude::*;
 use std::time::Duration;
 
+use crate::core::ingest;
 use crate::types::{AckStatus, Direction, TrustTier};
 #[cfg(test)]
 use crate::types::{DeliveryStatus, ReadStatus};
@@ -11,9 +12,11 @@ pub async fn run(json: bool, all: bool, local: bool) -> Result<()> {
     let cfg = config::load()?;
     let db = store::Db::open(&config::data_dir()?.join("mycel.db"))?;
 
+    let local_ingest = ingest::ingest_pending(&db).await?;
+
     let new_count = if local {
         // --local: read from SQLite only, no relay fetch
-        0
+        local_ingest.accepted
     } else {
         // Normal mode: sync from relays first
         let enc_path = config::config_dir()?.join("key.enc");
@@ -28,14 +31,19 @@ pub async fn run(json: bool, all: bool, local: bool) -> Result<()> {
 
         let client = mycel_nostr::build_client(keys.clone(), relay_urls)
             .await
-            .map_err(|e| anyhow::anyhow!("{e} — could not connect to relay; check your network connection"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("{e} — could not connect to relay; check your network connection")
+            })?;
 
         let report = sync::sync_once(&keys, &client, &db, relay_urls, timeout)
             .await
             .map_err(|e| anyhow::anyhow!("{e} — relay unreachable during inbox fetch"))?;
 
         if !json {
-            eprintln!("Fetched {} event(s), {} new", report.fetched, report.new_messages);
+            eprintln!(
+                "Fetched {} event(s), {} new",
+                report.fetched, report.new_messages
+            );
         }
 
         // Send ACKs for newly received messages if config.ack.enabled
@@ -44,7 +52,7 @@ pub async fn run(json: bool, all: bool, local: bool) -> Result<()> {
         }
 
         client.disconnect().await;
-        report.new_messages
+        report.new_messages + local_ingest.accepted
     };
 
     // Display messages from DB
@@ -53,7 +61,9 @@ pub async fn run(json: bool, all: bool, local: bool) -> Result<()> {
     } else {
         vec![TrustTier::Known]
     };
-    let messages = db.run(move |conn| store::get_messages(conn, Direction::In, &trust_filter)).await?;
+    let messages = db
+        .run(move |conn| store::get_messages(conn, Direction::In, &trust_filter))
+        .await?;
     display_messages(&messages, json, new_count)?;
 
     Ok(())
@@ -64,24 +74,27 @@ pub async fn run(json: bool, all: bool, local: bool) -> Result<()> {
 /// ACK sending over the wire is handled by the outbox flush cycle.
 async fn send_ack(db: &store::Db, _keys: &Keys, _relay_urls: &[String], my_hex: &str) {
     let my_hex = my_hex.to_string();
-    if let Err(e) = db.run(move |conn| {
-        // Get messages that were recently received (unread, inbound) to ACK
-        let msgs = store::get_messages(conn, Direction::In, &[TrustTier::Known])?;
-        for msg in &msgs {
-            // Only ACK messages that have a msg_id (v2 envelope)
-            // Use the nostr_id as fallback key for the ACK record
-            let ack_row = store::AckRow {
-                msg_id: msg.nostr_id.clone(),
-                ack_sender: my_hex.clone(),
-                ack_status: AckStatus::Acknowledged,
-                created_at: crate::envelope::now_iso8601(),
-                sent_at: None,
-            };
-            // INSERT OR IGNORE — idempotent, config.ack.enabled guard above
-            let _ = store::insert_ack(conn, &ack_row);
-        }
-        Ok(())
-    }).await {
+    if let Err(e) = db
+        .run(move |conn| {
+            // Get messages that were recently received (unread, inbound) to ACK
+            let msgs = store::get_messages(conn, Direction::In, &[TrustTier::Known])?;
+            for msg in &msgs {
+                // Only ACK messages that have a msg_id (v2 envelope)
+                // Use the nostr_id as fallback key for the ACK record
+                let ack_row = store::AckRow {
+                    msg_id: msg.nostr_id.clone(),
+                    ack_sender: my_hex.clone(),
+                    ack_status: AckStatus::Acknowledged,
+                    created_at: crate::envelope::now_iso8601(),
+                    sent_at: None,
+                };
+                // INSERT OR IGNORE — idempotent, config.ack.enabled guard above
+                let _ = store::insert_ack(conn, &ack_row);
+            }
+            Ok(())
+        })
+        .await
+    {
         tracing::warn!("send_ack: failed to record ACKs: {e}");
     }
 }
@@ -155,16 +168,22 @@ pub fn sanitize_for_terminal(content: &str) -> String {
                     chars.next();
                     while let Some(&next) = chars.peek() {
                         chars.next();
-                        if next.is_ascii_alphabetic() || next == '~' { break; }
+                        if next.is_ascii_alphabetic() || next == '~' {
+                            break;
+                        }
                     }
                 }
                 Some(&']') => {
                     chars.next();
                     while let Some(&next) = chars.peek() {
                         chars.next();
-                        if next == '\x07' { break; }
+                        if next == '\x07' {
+                            break;
+                        }
                         if next == '\x1b' {
-                            if chars.peek() == Some(&'\\') { chars.next(); }
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
                             break;
                         }
                     }
@@ -182,10 +201,14 @@ pub fn sanitize_for_terminal(content: &str) -> String {
                     while let Some(&next) = chars.peek() {
                         chars.next();
                         if next == '\x1b' {
-                            if chars.peek() == Some(&'\\') { chars.next(); }
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
                             break;
                         }
-                        if next == '\x07' { break; }
+                        if next == '\x07' {
+                            break;
+                        }
                     }
                 }
                 _ => {}
@@ -296,6 +319,11 @@ mod tests {
 
         assert!(store::insert_message(&conn, &msg).unwrap());
         assert!(!store::insert_message(&conn, &msg).unwrap());
-        assert_eq!(store::get_messages(&conn, Direction::In, &[]).unwrap().len(), 1);
+        assert_eq!(
+            store::get_messages(&conn, Direction::In, &[])
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

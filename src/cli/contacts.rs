@@ -35,9 +35,8 @@ pub async fn run(action: ContactsAction) -> Result<()> {
             let pubkey_hex = resolve_npub_to_hex(&address)?;
             let alias_clone = alias.clone();
 
-            db.run(move |conn| {
-                add_contact(conn, &pubkey_hex, alias_clone.as_deref())
-            }).await?;
+            db.run(move |conn| add_contact(conn, &pubkey_hex, alias_clone.as_deref()))
+                .await?;
 
             let display = alias.as_deref().unwrap_or(&address);
             let short_npub = shorten_npub(&address);
@@ -45,7 +44,8 @@ pub async fn run(action: ContactsAction) -> Result<()> {
         }
         ContactsAction::Block { address } => {
             let address_clone = address.clone();
-            db.run(move |conn| block_contact(conn, &address_clone)).await?;
+            db.run(move |conn| block_contact(conn, &address_clone))
+                .await?;
             println!("Blocked {address}");
         }
         ContactsAction::List => {
@@ -65,7 +65,8 @@ fn add_contact(conn: &Connection, pubkey_hex: &str, alias: Option<&str>) -> Resu
         return Err(MycelError::AliasCollision {
             alias: a.to_string(),
             pubkey: existing.pubkey[..existing.pubkey.len().min(12)].to_string(),
-        }.into());
+        }
+        .into());
     }
 
     let now = now_iso8601();
@@ -123,7 +124,8 @@ pub fn resolve_address_to_hex(conn: &Connection, address: &str) -> Result<String
 
 /// Parse npub1... or hex public key, return hex.
 pub fn resolve_npub_to_hex(address: &str) -> Result<String> {
-    let safe_addr: String = address.chars()
+    let safe_addr: String = address
+        .chars()
         .filter(|c| !c.is_control() && *c != '\x1b')
         .take(128)
         .collect();
@@ -244,6 +246,11 @@ mod tests {
         add_contact(&conn, &hex1, Some("alice")).unwrap();
         let result = add_contact(&conn, &hex2, Some("alice"));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("alias already in use"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("alias already in use")
+        );
     }
 }

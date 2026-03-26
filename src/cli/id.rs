@@ -9,7 +9,10 @@ pub async fn run() -> Result<()> {
     run_with_enc_path(&enc_path, cfg.identity.storage)
 }
 
-pub fn run_with_enc_path(enc_path: &std::path::Path, storage: config::IdentityStorage) -> Result<()> {
+pub fn run_with_enc_path(
+    enc_path: &std::path::Path,
+    storage: config::IdentityStorage,
+) -> Result<()> {
     if !crypto::is_initialized(enc_path) {
         return Err(MycelError::NotInitialized.into());
     }
@@ -27,6 +30,7 @@ mod tests {
 
     #[test]
     fn test_id_command() {
+        let _env_guard = crate::test_support::env_lock().lock().unwrap();
         let dir = TempDir::new().unwrap();
         let enc_path = dir.path().join("key.enc");
 
@@ -39,17 +43,24 @@ mod tests {
         );
 
         // Store a key via file backend
-        unsafe { std::env::set_var("MYCEL_KEY_PASSPHRASE", "test-passphrase-ci"); }
+        unsafe {
+            std::env::set_var("MYCEL_KEY_PASSPHRASE", "test-passphrase-ci");
+        }
         let keys_orig = nostr_sdk::Keys::generate();
-        let secret_hex =
-            zeroize::Zeroizing::new(keys_orig.secret_key().to_secret_hex());
+        let secret_hex = zeroize::Zeroizing::new(keys_orig.secret_key().to_secret_hex());
         crypto::store_key_file(&enc_path, "test-passphrase-ci", &secret_hex)
             .expect("store_key_file");
 
         // Now id should succeed
         let result = run_with_enc_path(&enc_path, config::IdentityStorage::File);
-        assert!(result.is_ok(), "id should succeed when initialized: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "id should succeed when initialized: {:?}",
+            result
+        );
 
-        unsafe { std::env::remove_var("MYCEL_KEY_PASSPHRASE"); }
+        unsafe {
+            std::env::remove_var("MYCEL_KEY_PASSPHRASE");
+        }
     }
 }

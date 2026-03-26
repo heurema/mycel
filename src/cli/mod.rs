@@ -12,7 +12,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "mycel", version, about = "Encrypted async mailbox for AI CLI agents")]
+#[command(
+    name = "mycel",
+    version,
+    about = "Encrypted async mailbox for AI CLI agents"
+)]
 pub struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -77,7 +81,11 @@ impl Cli {
         match self.command {
             Command::Init => init::run().await,
             Command::Id => id::run().await,
-            Command::Send { recipient, message, local } => send::run(&recipient, &message, local).await,
+            Command::Send {
+                recipient,
+                message,
+                local,
+            } => send::run(&recipient, &message, local).await,
             Command::Inbox { json, all, local } => inbox::run(json, all, local).await,
             Command::Contacts { action } => contacts::run(action).await,
             Command::Doctor => doctor::run().await,

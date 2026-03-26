@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS messages (
     thread_id        TEXT,
     reply_to         TEXT,
     transport        TEXT NOT NULL DEFAULT 'nostr',
-    transport_msg_id TEXT
+    transport_msg_id TEXT,
+    source_frame_id  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS contacts (
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS relays (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id, direction);
 CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id);
+CREATE INDEX IF NOT EXISTS idx_messages_source_frame_id ON messages(source_frame_id);
 
 CREATE TABLE IF NOT EXISTS threads (
     thread_id   TEXT PRIMARY KEY,
@@ -88,7 +90,44 @@ CREATE TABLE IF NOT EXISTS acks (
 
 CREATE INDEX IF NOT EXISTS idx_acks_msg_id ON acks(msg_id);
 
-PRAGMA user_version = 4;
+CREATE TABLE IF NOT EXISTS ingress_frames (
+    frame_id           TEXT PRIMARY KEY,
+    transport          TEXT NOT NULL,
+    endpoint_id        TEXT,
+    agent_ref          TEXT,
+    transport_msg_id   TEXT,
+    sender_hint        TEXT,
+    recipient_hint     TEXT,
+    envelope_json      TEXT NOT NULL,
+    auth_meta_json     TEXT,
+    received_at        TEXT NOT NULL,
+    processed_at       TEXT,
+    status             TEXT NOT NULL DEFAULT 'pending',
+    error              TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ingress_transport_msg
+    ON ingress_frames(transport, transport_msg_id);
+
+CREATE TABLE IF NOT EXISTS agent_endpoints (
+    endpoint_id        TEXT PRIMARY KEY,
+    agent_ref          TEXT NOT NULL,
+    transport          TEXT NOT NULL,
+    address            TEXT NOT NULL,
+    priority           INTEGER NOT NULL DEFAULT 100,
+    enabled            INTEGER NOT NULL DEFAULT 1,
+    metadata_json      TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_endpoints_unique
+    ON agent_endpoints(agent_ref, transport, address);
+
+CREATE INDEX IF NOT EXISTS idx_agent_endpoints_lookup
+    ON agent_endpoints(agent_ref, transport, enabled, priority);
+
+PRAGMA user_version = 6;
 ";
 
 /// Migration script to upgrade a user_version=1 database to user_version=2.
@@ -151,37 +190,76 @@ const MIGRATION_V3_TO_V4: &[&str] = &[
     "PRAGMA user_version = 4",
 ];
 
+/// Migration script to upgrade a user_version=4 database to user_version=5.
+/// Adds ingress_frames and links normalized messages back to source_frame_id.
+const MIGRATION_V4_TO_V5: &[&str] = &[
+    "ALTER TABLE messages ADD COLUMN source_frame_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_messages_source_frame_id ON messages(source_frame_id)",
+    "CREATE TABLE IF NOT EXISTS ingress_frames (
+        frame_id           TEXT PRIMARY KEY,
+        transport          TEXT NOT NULL,
+        endpoint_id        TEXT,
+        agent_ref          TEXT,
+        transport_msg_id   TEXT,
+        sender_hint        TEXT,
+        recipient_hint     TEXT,
+        envelope_json      TEXT NOT NULL,
+        auth_meta_json     TEXT,
+        received_at        TEXT NOT NULL,
+        processed_at       TEXT,
+        status             TEXT NOT NULL DEFAULT 'pending',
+        error              TEXT
+    )",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_ingress_transport_msg ON ingress_frames(transport, transport_msg_id)",
+    "PRAGMA user_version = 5",
+];
+
+/// Migration script to upgrade a user_version=5 database to user_version=6.
+/// Adds the agent_endpoints directory table.
+const MIGRATION_V5_TO_V6: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS agent_endpoints (
+        endpoint_id        TEXT PRIMARY KEY,
+        agent_ref          TEXT NOT NULL,
+        transport          TEXT NOT NULL,
+        address            TEXT NOT NULL,
+        priority           INTEGER NOT NULL DEFAULT 100,
+        enabled            INTEGER NOT NULL DEFAULT 1,
+        metadata_json      TEXT,
+        created_at         TEXT NOT NULL,
+        updated_at         TEXT NOT NULL
+    )",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_endpoints_unique ON agent_endpoints(agent_ref, transport, address)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_endpoints_lookup ON agent_endpoints(agent_ref, transport, enabled, priority)",
+    "PRAGMA user_version = 6",
+];
+
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
 
-    // Read user_version before applying schema so we know whether to run migration.
-    // For existing v1 databases user_version=1; for brand-new databases user_version=0.
+    // Read user_version before applying schema so we know whether to run migrations first.
+    // For existing databases we must add missing columns before SCHEMA creates indexes on them.
     let existing_version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
-    // For databases that existed before v2, run the migration FIRST to add new columns.
-    // This must happen before SCHEMA because SCHEMA includes CREATE INDEX on v2 columns.
-    if existing_version > 0 && existing_version < 2 {
-        migrate_v1_to_v2(&conn)?;
-    }
-
-    // Apply the full v3 schema (all CREATE TABLE/INDEX IF NOT EXISTS are idempotent).
-    conn.execute_batch(SCHEMA)?;
-
-    // For fresh databases (version=0), SCHEMA already created the v2 layout.
-    // Migration is still safe (duplicate-column ALTERs are caught and skipped).
     if existing_version == 0 {
-        migrate_v1_to_v2(&conn)?;
-    }
-
-    // For databases at version < 3 (including newly migrated v1→v2), apply v3 migration.
-    if existing_version < 3 {
-        migrate_to_v3(&conn)?;
-    }
-
-    // For databases at version < 4, apply v4 migration (adds acks table).
-    if existing_version < 4 {
-        migrate_to_v4(&conn)?;
+        conn.execute_batch(SCHEMA)?;
+    } else {
+        if existing_version < 2 {
+            migrate_v1_to_v2(&conn)?;
+        }
+        if existing_version < 3 {
+            migrate_to_v3(&conn)?;
+        }
+        if existing_version < 4 {
+            migrate_to_v4(&conn)?;
+        }
+        if existing_version < 5 {
+            migrate_to_v5(&conn)?;
+        }
+        if existing_version < 6 {
+            migrate_to_v6(&conn)?;
+        }
+        conn.execute_batch(SCHEMA)?;
     }
 
     // Restrict DB file to owner-only access (0o600)
@@ -227,6 +305,34 @@ fn migrate_to_v3(conn: &Connection) -> Result<()> {
 /// Idempotent: all steps use IF NOT EXISTS clauses.
 fn migrate_to_v4(conn: &Connection) -> Result<()> {
     for stmt in MIGRATION_V3_TO_V4 {
+        conn.execute_batch(stmt)?;
+    }
+    Ok(())
+}
+
+/// Applies the migration to v5: adds ingress_frames and source_frame_id.
+/// Idempotent: duplicate-column ADD COLUMN errors are skipped.
+fn migrate_to_v5(conn: &Connection) -> Result<()> {
+    for stmt in MIGRATION_V4_TO_V5 {
+        match conn.execute_batch(stmt) {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("duplicate column name") {
+                    // source_frame_id already exists
+                } else {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Applies the migration to v6: adds agent_endpoints.
+/// Idempotent: all steps use IF NOT EXISTS clauses.
+fn migrate_to_v6(conn: &Connection) -> Result<()> {
+    for stmt in MIGRATION_V5_TO_V6 {
         conn.execute_batch(stmt)?;
     }
     Ok(())
@@ -300,14 +406,46 @@ pub struct ContactRow {
     pub added_at: String,
 }
 
+/// Raw transport frame stored before shared ingest/materialization.
+#[derive(Debug, Clone)]
+pub struct IngressFrameRow {
+    pub frame_id: String,
+    pub transport: String,
+    pub endpoint_id: Option<String>,
+    pub agent_ref: Option<String>,
+    pub transport_msg_id: Option<String>,
+    pub sender_hint: Option<String>,
+    pub recipient_hint: Option<String>,
+    pub envelope_json: String,
+    pub auth_meta_json: Option<String>,
+    pub received_at: String,
+    pub processed_at: Option<String>,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+/// A directory entry describing how to reach an agent over a specific transport.
+#[derive(Debug, Clone)]
+pub struct AgentEndpointRow {
+    pub endpoint_id: String,
+    pub agent_ref: String,
+    pub transport: String,
+    pub address: String,
+    pub priority: i64,
+    pub enabled: bool,
+    pub metadata_json: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// A row in the outbox table — tracks pending/sent/failed outbound Nostr messages.
 #[derive(Debug, Clone)]
 pub struct OutboxRow {
     pub msg_id: String,
     pub recipient_hex: String,
     pub envelope_json: String,
-    pub relay_urls: String,   // JSON array of relay URL strings
-    pub status: String,       // 'pending' | 'sent' | 'failed_permanent'
+    pub relay_urls: String, // JSON array of relay URL strings
+    pub status: String,     // 'pending' | 'sent' | 'failed_permanent'
     pub retry_count: u32,
     pub ok_relay_count: u32,
     pub created_at: String,
@@ -370,6 +508,149 @@ pub fn get_pending_acks(conn: &Connection) -> Result<Vec<AckRow>> {
 }
 
 // ---------------------------------------------------------------------------
+// Ingress operations
+// ---------------------------------------------------------------------------
+
+/// Insert a raw ingress frame. Returns Ok(true) if inserted, Ok(false) if duplicate.
+pub fn insert_ingress_frame(conn: &Connection, frame: &IngressFrameRow) -> Result<bool> {
+    let rows = conn.execute(
+        "INSERT OR IGNORE INTO ingress_frames
+            (frame_id, transport, endpoint_id, agent_ref, transport_msg_id,
+             sender_hint, recipient_hint, envelope_json, auth_meta_json,
+             received_at, processed_at, status, error)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        rusqlite::params![
+            frame.frame_id,
+            frame.transport,
+            frame.endpoint_id,
+            frame.agent_ref,
+            frame.transport_msg_id,
+            frame.sender_hint,
+            frame.recipient_hint,
+            frame.envelope_json,
+            frame.auth_meta_json,
+            frame.received_at,
+            frame.processed_at,
+            frame.status,
+            frame.error,
+        ],
+    )?;
+    Ok(rows > 0)
+}
+
+/// Return all pending ingress frames oldest-first.
+pub fn get_pending_ingress_frames(conn: &Connection) -> Result<Vec<IngressFrameRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT frame_id, transport, endpoint_id, agent_ref, transport_msg_id,
+                sender_hint, recipient_hint, envelope_json, auth_meta_json,
+                received_at, processed_at, status, error
+         FROM ingress_frames
+         WHERE status = 'pending'
+         ORDER BY received_at ASC, frame_id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(IngressFrameRow {
+            frame_id: row.get(0)?,
+            transport: row.get(1)?,
+            endpoint_id: row.get(2)?,
+            agent_ref: row.get(3)?,
+            transport_msg_id: row.get(4)?,
+            sender_hint: row.get(5)?,
+            recipient_hint: row.get(6)?,
+            envelope_json: row.get(7)?,
+            auth_meta_json: row.get(8)?,
+            received_at: row.get(9)?,
+            processed_at: row.get(10)?,
+            status: row.get(11)?,
+            error: row.get(12)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Mark an ingress frame as processed with final status.
+pub fn update_ingress_frame_result(
+    conn: &Connection,
+    frame_id: &str,
+    status: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE ingress_frames
+         SET status = ?1, error = ?2, processed_at = ?3
+         WHERE frame_id = ?4",
+        rusqlite::params![status, error, crate::envelope::now_iso8601(), frame_id],
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Agent endpoint directory operations
+// ---------------------------------------------------------------------------
+
+/// Insert or update an agent endpoint by endpoint_id while preserving created_at.
+pub fn upsert_agent_endpoint(conn: &Connection, endpoint: &AgentEndpointRow) -> Result<()> {
+    conn.execute(
+        "INSERT INTO agent_endpoints
+            (endpoint_id, agent_ref, transport, address, priority, enabled,
+             metadata_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(endpoint_id) DO UPDATE SET
+            agent_ref = excluded.agent_ref,
+            transport = excluded.transport,
+            address = excluded.address,
+            priority = excluded.priority,
+            enabled = excluded.enabled,
+            metadata_json = excluded.metadata_json,
+            updated_at = excluded.updated_at",
+        rusqlite::params![
+            endpoint.endpoint_id,
+            endpoint.agent_ref,
+            endpoint.transport,
+            endpoint.address,
+            endpoint.priority,
+            endpoint.enabled,
+            endpoint.metadata_json,
+            endpoint.created_at,
+            endpoint.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Return the highest-priority enabled endpoint for an agent and transport.
+pub fn get_agent_endpoint(
+    conn: &Connection,
+    agent_ref: &str,
+    transport: &str,
+) -> Result<Option<AgentEndpointRow>> {
+    conn.query_row(
+        "SELECT endpoint_id, agent_ref, transport, address, priority, enabled,
+                metadata_json, created_at, updated_at
+         FROM agent_endpoints
+         WHERE agent_ref = ?1 AND transport = ?2 AND enabled = 1
+         ORDER BY priority ASC, updated_at DESC
+         LIMIT 1",
+        rusqlite::params![agent_ref, transport],
+        |row| {
+            Ok(AgentEndpointRow {
+                endpoint_id: row.get(0)?,
+                agent_ref: row.get(1)?,
+                transport: row.get(2)?,
+                address: row.get(3)?,
+                priority: row.get(4)?,
+                enabled: row.get(5)?,
+                metadata_json: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+// ---------------------------------------------------------------------------
 // Message operations
 // ---------------------------------------------------------------------------
 
@@ -378,8 +659,9 @@ pub fn insert_message(conn: &Connection, msg: &MessageRow) -> Result<bool> {
     let rows = conn.execute(
         "INSERT OR IGNORE INTO messages
             (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
-             created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+             created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id,
+             source_frame_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         rusqlite::params![
             msg.nostr_id,
             msg.direction,
@@ -390,11 +672,12 @@ pub fn insert_message(conn: &Connection, msg: &MessageRow) -> Result<bool> {
             msg.read_status,
             msg.created_at,
             msg.received_at,
-            None::<&str>,   // msg_id: caller may backfill via insert_message_v2
-            None::<&str>,   // thread_id
-            None::<&str>,   // reply_to
-            "nostr",        // transport: default for v1-compat inserts
-            None::<&str>,   // transport_msg_id
+            None::<&str>, // msg_id: caller may backfill via insert_message_v2
+            None::<&str>, // thread_id
+            None::<&str>, // reply_to
+            "nostr",      // transport: default for v1-compat inserts
+            None::<&str>, // transport_msg_id
+            None::<&str>, // source_frame_id
         ],
     )?;
     Ok(rows > 0)
@@ -407,15 +690,25 @@ pub fn insert_message(conn: &Connection, msg: &MessageRow) -> Result<bool> {
 ///   - v2 (msg_id present): INSERT ... SELECT ... WHERE NOT EXISTS (msg_id match) —
 ///     handles outbox retries that reuse the same msg_id with a new nostr_id.
 ///   - v1 / legacy: (msg_id absent) INSERT OR IGNORE on nostr_id PRIMARY KEY.
-pub fn insert_message_v2(conn: &Connection, msg: &MessageRow, meta: &crate::types::MessageMeta) -> Result<bool> {
-    let rows = if meta.msg_id.as_deref().map(|s| !s.is_empty()).unwrap_or(false) {
+pub fn insert_message_v2(
+    conn: &Connection,
+    msg: &MessageRow,
+    meta: &crate::types::MessageMeta,
+) -> Result<bool> {
+    let rows = if meta
+        .msg_id
+        .as_deref()
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+    {
         // v2 msg_id dedup: use WHERE NOT EXISTS to prevent duplicate logical messages
         // even when nostr_id differs (e.g. outbox retry with new event ID)
         conn.execute(
             "INSERT OR IGNORE INTO messages
                 (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
-                 created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+                 created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id,
+                 source_frame_id)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
              WHERE NOT EXISTS (SELECT 1 FROM messages WHERE msg_id = ?10 AND direction = ?2 AND msg_id IS NOT NULL AND msg_id != '')",
             rusqlite::params![
                 msg.nostr_id,
@@ -432,6 +725,7 @@ pub fn insert_message_v2(conn: &Connection, msg: &MessageRow, meta: &crate::type
                 meta.reply_to.as_deref(),
                 meta.transport.as_deref().unwrap_or("nostr"),
                 meta.transport_msg_id.as_deref(),
+                meta.source_frame_id.as_deref(),
             ],
         )?
     } else {
@@ -439,8 +733,9 @@ pub fn insert_message_v2(conn: &Connection, msg: &MessageRow, meta: &crate::type
         conn.execute(
             "INSERT OR IGNORE INTO messages
                 (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
-                 created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id,
+                 source_frame_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             rusqlite::params![
                 msg.nostr_id,
                 msg.direction,
@@ -456,6 +751,7 @@ pub fn insert_message_v2(conn: &Connection, msg: &MessageRow, meta: &crate::type
                 meta.reply_to.as_deref(),
                 meta.transport.as_deref().unwrap_or("nostr"),
                 meta.transport_msg_id.as_deref(),
+                meta.source_frame_id.as_deref(),
             ],
         )?
     };
@@ -465,19 +761,30 @@ pub fn insert_message_v2(conn: &Connection, msg: &MessageRow, meta: &crate::type
 /// Insert a local-transport message using msg_id as the dedup key (INSERT OR IGNORE).
 /// Returns Ok(true) if inserted, Ok(false) if a row with the same msg_id already exists.
 /// nostr_id is set to msg_id for local messages (no Nostr event ID).
-pub fn insert_message_local(conn: &Connection, msg: &MessageRow, meta: &crate::types::MessageMeta) -> Result<bool> {
+pub fn insert_message_local(
+    conn: &Connection,
+    msg: &MessageRow,
+    meta: &crate::types::MessageMeta,
+) -> Result<bool> {
     let msg_id = meta.msg_id.as_deref().unwrap_or("");
     // Guard: empty msg_id would bypass dedup — callers must provide a real ID
     if msg_id.is_empty() {
-        return Err(anyhow::anyhow!("msg_id is required for local message insert"));
+        return Err(anyhow::anyhow!(
+            "msg_id is required for local message insert"
+        ));
     }
     // Use msg_id as nostr_id placeholder for local messages so the PK is populated.
-    let nostr_id = if msg.nostr_id.is_empty() { msg_id } else { &msg.nostr_id };
+    let nostr_id = if msg.nostr_id.is_empty() {
+        msg_id
+    } else {
+        &msg.nostr_id
+    };
     let rows = conn.execute(
         "INSERT OR IGNORE INTO messages
             (nostr_id, direction, sender, recipient, content, delivery_status, read_status,
-             created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+             created_at, received_at, msg_id, thread_id, reply_to, transport, transport_msg_id,
+             source_frame_id)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
          WHERE NOT EXISTS (SELECT 1 FROM messages WHERE msg_id = ?10 AND direction = ?2 AND msg_id IS NOT NULL AND msg_id != '')",
         rusqlite::params![
             nostr_id,
@@ -494,6 +801,7 @@ pub fn insert_message_local(conn: &Connection, msg: &MessageRow, meta: &crate::t
             meta.reply_to.as_deref(),
             meta.transport.as_deref().unwrap_or("local"),
             meta.transport_msg_id.as_deref(),
+            meta.source_frame_id.as_deref(),
         ],
     )?;
     Ok(rows > 0)
@@ -537,8 +845,7 @@ pub fn get_messages(
             placeholders
         );
         let mut stmt = conn.prepare(&sql)?;
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(direction)];
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(direction)];
         for t in trust_tiers {
             params_vec.push(Box::new(*t));
         }
@@ -692,7 +999,12 @@ pub fn insert_thread(conn: &Connection, thread: &ThreadRow) -> Result<bool> {
 
 /// Update thread members JSON column and updated_at timestamp.
 #[allow(dead_code)] // Thread member management CLI lands in v0.3
-pub fn update_thread_members(conn: &Connection, thread_id: &str, members_json: &str, updated_at: &str) -> Result<bool> {
+pub fn update_thread_members(
+    conn: &Connection,
+    thread_id: &str,
+    members_json: &str,
+    updated_at: &str,
+) -> Result<bool> {
     let rows = conn.execute(
         "UPDATE threads SET members = ?1, updated_at = ?2 WHERE thread_id = ?3",
         rusqlite::params![members_json, updated_at, thread_id],
@@ -703,7 +1015,12 @@ pub fn update_thread_members(conn: &Connection, thread_id: &str, members_json: &
 /// Add a member to the thread's JSON members array.
 /// Deserializes current members, appends new member if not already present, re-serializes.
 #[allow(dead_code)] // Thread member management CLI lands in v0.3
-pub fn add_thread_member(conn: &Connection, thread_id: &str, pubkey: &str, joined_at: &str) -> Result<bool> {
+pub fn add_thread_member(
+    conn: &Connection,
+    thread_id: &str,
+    pubkey: &str,
+    joined_at: &str,
+) -> Result<bool> {
     use crate::types::ThreadMember;
 
     let thread = get_thread(conn, thread_id)?;
@@ -712,8 +1029,7 @@ pub fn add_thread_member(conn: &Connection, thread_id: &str, pubkey: &str, joine
         None => return Ok(false),
     };
 
-    let mut members: Vec<ThreadMember> = serde_json::from_str(&thread.members)
-        .unwrap_or_default();
+    let mut members: Vec<ThreadMember> = serde_json::from_str(&thread.members).unwrap_or_default();
 
     // Idempotent: skip if already a member
     if members.iter().any(|m| m.pubkey == pubkey) {
@@ -741,8 +1057,7 @@ pub fn remove_thread_member(conn: &Connection, thread_id: &str, pubkey: &str) ->
         None => return Ok(false),
     };
 
-    let members: Vec<ThreadMember> = serde_json::from_str(&thread.members)
-        .unwrap_or_default();
+    let members: Vec<ThreadMember> = serde_json::from_str(&thread.members).unwrap_or_default();
     let filtered: Vec<ThreadMember> = members.into_iter().filter(|m| m.pubkey != pubkey).collect();
     let members_json = serde_json::to_string(&filtered)?;
     let now = crate::envelope::now_iso8601();
@@ -765,12 +1080,15 @@ pub fn get_thread_messages(conn: &Connection, thread_id: &str) -> Result<Vec<Mes
 }
 
 /// Get all messages for a thread with full v2 metadata (msg_id, reply_to, transport_msg_id).
-pub fn get_thread_messages_full(conn: &Connection, thread_id: &str) -> Result<Vec<(MessageRow, crate::types::MessageMeta)>> {
+pub fn get_thread_messages_full(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Vec<(MessageRow, crate::types::MessageMeta)>> {
     let mut stmt = conn.prepare(
         "SELECT m.nostr_id, m.direction, m.sender, m.recipient, m.content,
                 m.delivery_status, m.read_status, m.created_at, m.received_at,
                 c.alias,
-                m.msg_id, m.thread_id, m.reply_to, m.transport, m.transport_msg_id
+                m.msg_id, m.thread_id, m.reply_to, m.transport, m.transport_msg_id, m.source_frame_id
          FROM messages m
          LEFT JOIN contacts c ON c.pubkey = m.sender
          WHERE m.thread_id = ?1
@@ -795,6 +1113,7 @@ pub fn get_thread_messages_full(conn: &Connection, thread_id: &str) -> Result<Ve
             reply_to: row.get(12)?,
             transport: row.get(13)?,
             transport_msg_id: row.get(14)?,
+            source_frame_id: row.get(15)?,
         };
         Ok((msg, meta))
     })?;
@@ -855,7 +1174,12 @@ pub fn insert_outbox(conn: &Connection, row: &OutboxRow) -> Result<()> {
 }
 
 /// Update outbox row to sent status after successful relay publish.
-pub fn update_outbox_sent(conn: &Connection, msg_id: &str, ok_relay_count: u32, sent_at: &str) -> Result<()> {
+pub fn update_outbox_sent(
+    conn: &Connection,
+    msg_id: &str,
+    ok_relay_count: u32,
+    sent_at: &str,
+) -> Result<()> {
     conn.execute(
         "UPDATE outbox SET status = 'sent', sent_at = ?1, ok_relay_count = ?2,
                            last_attempt_at = ?1
@@ -866,7 +1190,13 @@ pub fn update_outbox_sent(conn: &Connection, msg_id: &str, ok_relay_count: u32, 
 }
 
 /// Update outbox row on relay failure: increment retry_count and set next_retry_at.
-pub fn update_outbox_retry(conn: &Connection, msg_id: &str, retry_count: u32, next_retry_at: &str, now: &str) -> Result<()> {
+pub fn update_outbox_retry(
+    conn: &Connection,
+    msg_id: &str,
+    retry_count: u32,
+    next_retry_at: &str,
+    now: &str,
+) -> Result<()> {
     conn.execute(
         "UPDATE outbox SET retry_count = ?1, next_retry_at = ?2, last_attempt_at = ?3
          WHERE msg_id = ?4",
@@ -885,53 +1215,58 @@ pub fn update_outbox_failed(conn: &Connection, msg_id: &str, now: &str) -> Resul
 }
 
 /// Flush pending outbox rows: retry any pending messages whose next_retry_at is in the past.
-/// Also runs cleanup: delete sent >7d and failed_permanent >30d.
+/// Also runs cleanup:
+/// - delete sent rows older than 7 days by `sent_at` (fallback `created_at`)
+/// - delete failed_permanent rows older than 30 days by `last_attempt_at` (fallback `created_at`)
 pub async fn flush_outbox(db: &Db, keys: &Keys, relay_urls: Vec<String>) -> Result<()> {
-    use crate::nostr as mycel_nostr;
     use crate::envelope::Envelope;
+    use crate::nostr as mycel_nostr;
 
-    // Cleanup: DELETE FROM outbox WHERE status='sent' AND created_at < datetime('now', '-7 days')
-    let relay_urls_clone = relay_urls.clone();
     db.run(move |conn| {
-        // cleanup sent >7 days
         conn.execute(
-            "DELETE FROM outbox WHERE status = 'sent' AND created_at < datetime('now', '-7 days')",
+            "DELETE FROM outbox
+             WHERE status = 'sent'
+               AND COALESCE(sent_at, created_at) < datetime('now', '-7 days')",
             [],
         )?;
-        // cleanup failed_permanent >30 days
         conn.execute(
-            "DELETE FROM outbox WHERE status = 'failed_permanent' AND created_at < datetime('now', '-30 days')",
+            "DELETE FROM outbox
+             WHERE status = 'failed_permanent'
+               AND COALESCE(last_attempt_at, created_at) < datetime('now', '-30 days')",
             [],
         )?;
         Ok(())
-    }).await?;
+    })
+    .await?;
 
     // Fetch pending rows due for retry
-    let pending_rows: Vec<OutboxRow> = db.run(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT msg_id, recipient_hex, envelope_json, relay_urls, status, retry_count,
+    let pending_rows: Vec<OutboxRow> = db
+        .run(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT msg_id, recipient_hex, envelope_json, relay_urls, status, retry_count,
                     ok_relay_count, created_at, last_attempt_at, next_retry_at, sent_at
              FROM outbox
              WHERE status = 'pending'
                AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(OutboxRow {
-                msg_id: row.get(0)?,
-                recipient_hex: row.get(1)?,
-                envelope_json: row.get(2)?,
-                relay_urls: row.get(3)?,
-                status: row.get(4)?,
-                retry_count: row.get::<_, u32>(5)?,
-                ok_relay_count: row.get::<_, u32>(6)?,
-                created_at: row.get(7)?,
-                last_attempt_at: row.get(8)?,
-                next_retry_at: row.get(9)?,
-                sent_at: row.get(10)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }).await?;
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(OutboxRow {
+                    msg_id: row.get(0)?,
+                    recipient_hex: row.get(1)?,
+                    envelope_json: row.get(2)?,
+                    relay_urls: row.get(3)?,
+                    status: row.get(4)?,
+                    retry_count: row.get::<_, u32>(5)?,
+                    ok_relay_count: row.get::<_, u32>(6)?,
+                    created_at: row.get(7)?,
+                    last_attempt_at: row.get(8)?,
+                    next_retry_at: row.get(9)?,
+                    sent_at: row.get(10)?,
+                })
+            })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await?;
 
     if pending_rows.is_empty() {
         return Ok(());
@@ -954,7 +1289,10 @@ pub async fn flush_outbox(db: &Db, keys: &Keys, relay_urls: Vec<String>) -> Resu
         let env: Envelope = match serde_json::from_str(&row.envelope_json) {
             Ok(e) => e,
             Err(e) => {
-                tracing::warn!("flush_outbox: poison-pill — invalid envelope_json for {}: {e}", row.msg_id);
+                tracing::warn!(
+                    "flush_outbox: poison-pill — invalid envelope_json for {}: {e}",
+                    row.msg_id
+                );
                 let mid = row.msg_id.clone();
                 let _ = db.run(move |conn| {
                     conn.execute(
@@ -971,7 +1309,10 @@ pub async fn flush_outbox(db: &Db, keys: &Keys, relay_urls: Vec<String>) -> Resu
         let recipient_pk = match PublicKey::from_hex(&row.recipient_hex) {
             Ok(pk) => pk,
             Err(e) => {
-                tracing::warn!("flush_outbox: poison-pill — invalid recipient for {}: {e}", row.msg_id);
+                tracing::warn!(
+                    "flush_outbox: poison-pill — invalid recipient for {}: {e}",
+                    row.msg_id
+                );
                 let mid = row.msg_id.clone();
                 let _ = db.run(move |conn| {
                     conn.execute(
@@ -998,11 +1339,13 @@ pub async fn flush_outbox(db: &Db, keys: &Keys, relay_urls: Vec<String>) -> Resu
             EventBuilder::new(Kind::PrivateDirectMessage, &env_json).build(keys.public_key());
 
         // Parse stored relay_urls (JSON array), fall back to config relay_urls
-        let publish_relays: Vec<String> = serde_json::from_str(&row.relay_urls)
-            .unwrap_or_else(|_| relay_urls.clone());
+        let publish_relays: Vec<String> =
+            serde_json::from_str(&row.relay_urls).unwrap_or_else(|_| relay_urls.clone());
 
         // Attempt publish
-        let result = mycel_nostr::publish_gift_wrap(&client, &publish_relays, &recipient_pk, rumor, timeout).await;
+        let result =
+            mycel_nostr::publish_gift_wrap(&client, &publish_relays, &recipient_pk, rumor, timeout)
+                .await;
 
         let new_retry_count = row.retry_count + 1;
         let msg_id = row.msg_id.clone();
@@ -1010,23 +1353,22 @@ pub async fn flush_outbox(db: &Db, keys: &Keys, relay_urls: Vec<String>) -> Resu
         match result {
             Ok((_event_id, ok_count)) if ok_count > 0 => {
                 let now_clone = now.clone();
-                db.run(move |conn| {
-                    update_outbox_sent(conn, &msg_id, ok_count as u32, &now_clone)
-                }).await?;
+                db.run(move |conn| update_outbox_sent(conn, &msg_id, ok_count as u32, &now_clone))
+                    .await?;
             }
             _ => {
                 // Failure or zero relays accepted
                 if new_retry_count >= MAX_RETRIES {
                     let now_clone = now.clone();
-                    db.run(move |conn| {
-                        update_outbox_failed(conn, &msg_id, &now_clone)
-                    }).await?;
+                    db.run(move |conn| update_outbox_failed(conn, &msg_id, &now_clone))
+                        .await?;
                 } else {
                     let next_retry = compute_next_retry_at(new_retry_count);
                     let now_clone = now.clone();
                     db.run(move |conn| {
                         update_outbox_retry(conn, &msg_id, new_retry_count, &next_retry, &now_clone)
-                    }).await?;
+                    })
+                    .await?;
                 }
             }
         }
@@ -1045,7 +1387,8 @@ pub fn get_known_nostr_ids(conn: &Connection) -> Result<Vec<(String, u64)>> {
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
     })?;
-    rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
 }
 
 /// Get sync cursor for a relay URL (0 if not set)
@@ -1096,6 +1439,7 @@ mod tests {
         assert!(tables.contains(&"contacts".to_string()));
         assert!(tables.contains(&"sync_state".to_string()));
         assert!(tables.contains(&"relays".to_string()));
+        assert!(tables.contains(&"agent_endpoints".to_string()));
     }
 
     #[test]
@@ -1201,7 +1545,12 @@ mod tests {
         assert_eq!(unknown_msgs[0].sender, "unknown_pubkey");
 
         // Both
-        let all_msgs = get_messages(&conn, Direction::In, &[TrustTier::Known, TrustTier::Unknown]).unwrap();
+        let all_msgs = get_messages(
+            &conn,
+            Direction::In,
+            &[TrustTier::Known, TrustTier::Unknown],
+        )
+        .unwrap();
         assert_eq!(all_msgs.len(), 2);
     }
 
@@ -1316,7 +1665,60 @@ mod tests {
     }
 
     #[test]
-    fn schema_v2_has_new_columns_and_indexes() {
+    fn test_upsert_and_get_agent_endpoint() {
+        let conn = open_mem();
+        let now = crate::envelope::now_iso8601();
+
+        upsert_agent_endpoint(
+            &conn,
+            &AgentEndpointRow {
+                endpoint_id: "config:local_direct:codex".to_string(),
+                agent_ref: "codex".to_string(),
+                transport: "local_direct".to_string(),
+                address: "/tmp/codex.db".to_string(),
+                priority: 100,
+                enabled: true,
+                metadata_json: Some("{\"pubkey_hex\":\"abc\"}".to_string()),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            },
+        )
+        .unwrap();
+
+        upsert_agent_endpoint(
+            &conn,
+            &AgentEndpointRow {
+                endpoint_id: "config:local_direct:codex".to_string(),
+                agent_ref: "codex".to_string(),
+                transport: "local_direct".to_string(),
+                address: "/tmp/codex-v2.db".to_string(),
+                priority: 50,
+                enabled: true,
+                metadata_json: Some("{\"pubkey_hex\":\"def\"}".to_string()),
+                created_at: "2020-01-01T00:00:00Z".to_string(),
+                updated_at: crate::envelope::now_iso8601(),
+            },
+        )
+        .unwrap();
+
+        let endpoint = get_agent_endpoint(&conn, "codex", "local_direct")
+            .unwrap()
+            .expect("endpoint");
+        assert_eq!(endpoint.endpoint_id, "config:local_direct:codex");
+        assert_eq!(endpoint.address, "/tmp/codex-v2.db");
+        assert_eq!(endpoint.priority, 50);
+        assert_eq!(
+            endpoint.metadata_json.as_deref(),
+            Some("{\"pubkey_hex\":\"def\"}")
+        );
+        assert_eq!(
+            endpoint.created_at, now,
+            "created_at must be preserved on upsert"
+        );
+    }
+
+    #[test]
+    fn schema_has_required_columns_and_indexes() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
 
@@ -1328,11 +1730,30 @@ mod tests {
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-        assert!(cols.contains(&"msg_id".to_string()), "missing msg_id column");
-        assert!(cols.contains(&"thread_id".to_string()), "missing thread_id column");
-        assert!(cols.contains(&"reply_to".to_string()), "missing reply_to column");
-        assert!(cols.contains(&"transport".to_string()), "missing transport column");
-        assert!(cols.contains(&"transport_msg_id".to_string()), "missing transport_msg_id column");
+        assert!(
+            cols.contains(&"msg_id".to_string()),
+            "missing msg_id column"
+        );
+        assert!(
+            cols.contains(&"thread_id".to_string()),
+            "missing thread_id column"
+        );
+        assert!(
+            cols.contains(&"reply_to".to_string()),
+            "missing reply_to column"
+        );
+        assert!(
+            cols.contains(&"transport".to_string()),
+            "missing transport column"
+        );
+        assert!(
+            cols.contains(&"transport_msg_id".to_string()),
+            "missing transport_msg_id column"
+        );
+        assert!(
+            cols.contains(&"source_frame_id".to_string()),
+            "missing source_frame_id column"
+        );
 
         // Check threads table exists
         let tables: Vec<String> = conn
@@ -1342,7 +1763,18 @@ mod tests {
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-        assert!(tables.contains(&"threads".to_string()), "missing threads table");
+        assert!(
+            tables.contains(&"threads".to_string()),
+            "missing threads table"
+        );
+        assert!(
+            tables.contains(&"ingress_frames".to_string()),
+            "missing ingress_frames table"
+        );
+        assert!(
+            tables.contains(&"agent_endpoints".to_string()),
+            "missing agent_endpoints table"
+        );
 
         // Check indexes exist
         let indexes: Vec<String> = conn
@@ -1352,14 +1784,36 @@ mod tests {
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-        assert!(indexes.contains(&"idx_messages_msg_id".to_string()), "missing idx_messages_msg_id");
-        assert!(indexes.contains(&"idx_messages_thread_id".to_string()), "missing idx_messages_thread_id");
+        assert!(
+            indexes.contains(&"idx_messages_msg_id".to_string()),
+            "missing idx_messages_msg_id"
+        );
+        assert!(
+            indexes.contains(&"idx_messages_thread_id".to_string()),
+            "missing idx_messages_thread_id"
+        );
+        assert!(
+            indexes.contains(&"idx_messages_source_frame_id".to_string()),
+            "missing idx_messages_source_frame_id"
+        );
+        assert!(
+            indexes.contains(&"idx_ingress_transport_msg".to_string()),
+            "missing idx_ingress_transport_msg"
+        );
+        assert!(
+            indexes.contains(&"idx_agent_endpoints_unique".to_string()),
+            "missing idx_agent_endpoints_unique"
+        );
+        assert!(
+            indexes.contains(&"idx_agent_endpoints_lookup".to_string()),
+            "missing idx_agent_endpoints_lookup"
+        );
 
-        // Check user_version = 2
+        // Check user_version = 6
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4, "user_version should be 4");
+        assert_eq!(version, 6, "user_version should be 6");
     }
 
     #[test]
@@ -1394,13 +1848,21 @@ mod tests {
 
         // Verify backfill: msg_id should be 'legacy:nostr123'
         let msg_id: String = conn
-            .query_row("SELECT msg_id FROM messages WHERE nostr_id = 'nostr123'", [], |row| row.get(0))
+            .query_row(
+                "SELECT msg_id FROM messages WHERE nostr_id = 'nostr123'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(msg_id, "legacy:nostr123");
 
         // Verify transport_msg_id = nostr_id
         let tmid: String = conn
-            .query_row("SELECT transport_msg_id FROM messages WHERE nostr_id = 'nostr123'", [], |row| row.get(0))
+            .query_row(
+                "SELECT transport_msg_id FROM messages WHERE nostr_id = 'nostr123'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(tmid, "nostr123");
 
@@ -1435,6 +1897,7 @@ mod tests {
             reply_to: None,
             transport: Some("nostr".to_string()),
             transport_msg_id: Some("nid_v2".to_string()),
+            source_frame_id: None,
         };
 
         let inserted = insert_message_v2(&conn, &msg, &meta).unwrap();
@@ -1442,7 +1905,11 @@ mod tests {
 
         // Verify stored meta fields
         let stored_msg_id: String = conn
-            .query_row("SELECT msg_id FROM messages WHERE nostr_id = 'nid_v2'", [], |row| row.get(0))
+            .query_row(
+                "SELECT msg_id FROM messages WHERE nostr_id = 'nid_v2'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(stored_msg_id, "019d1a2b-test");
     }
@@ -1459,7 +1926,8 @@ mod tests {
         {
             let conn = Connection::open(&db_path).unwrap();
             conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
-            conn.execute_batch("
+            conn.execute_batch(
+                "
                 CREATE TABLE IF NOT EXISTS messages (
                     nostr_id         TEXT PRIMARY KEY,
                     direction        TEXT NOT NULL,
@@ -1482,30 +1950,43 @@ mod tests {
                     last_sync   INTEGER NOT NULL DEFAULT 0
                 );
                 PRAGMA user_version = 1;
-            ").unwrap();
+            ",
+            )
+            .unwrap();
             conn.execute(
                 "INSERT INTO messages (nostr_id, direction, sender, recipient, content, \
                  delivery_status, read_status, created_at, received_at) \
                  VALUES ('ev_abc', 'in', 'sender_hex', 'recip_hex', 'old msg', \
                          'received', 'unread', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z')",
                 [],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         // Step 2: open() must migrate without error
         let conn = open(&db_path).expect("open() must migrate v1 DB without error");
 
         // Step 3: Verify migration happened
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 4, "user_version must be 4 after migration");
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 6, "user_version must be 6 after migration");
 
         let msg_id: String = conn
-            .query_row("SELECT msg_id FROM messages WHERE nostr_id = 'ev_abc'", [], |r| r.get(0))
+            .query_row(
+                "SELECT msg_id FROM messages WHERE nostr_id = 'ev_abc'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(msg_id, "legacy:ev_abc", "v1 msg must get legacy: prefix");
 
         let transport: String = conn
-            .query_row("SELECT transport FROM messages WHERE nostr_id = 'ev_abc'", [], |r| r.get(0))
+            .query_row(
+                "SELECT transport FROM messages WHERE nostr_id = 'ev_abc'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(transport, "nostr", "v1 messages must get transport=nostr");
     }

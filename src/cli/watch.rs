@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::{config, crypto, nostr as mycel_nostr, store, sync};
+use crate::{config, core::ingest, crypto, nostr as mycel_nostr, store, sync};
 
 const DEFAULT_INTERVAL: u64 = 30;
 const MAX_BACKOFF: u64 = 300; // 5 minutes
@@ -46,6 +46,11 @@ pub async fn run(interval: Option<u64>) -> Result<()> {
     write_state(&state_path, &started_at, 0, poll_secs, None, "starting");
 
     // 6. Initial sync
+    let initial_local = ingest::ingest_pending(&db).await?;
+    total_received += initial_local.accepted;
+    if initial_local.accepted > 0 {
+        notify_new(initial_local.accepted);
+    }
     match sync::sync_once(&keys, &client, &db, &relay_urls, timeout).await {
         Ok(report) => {
             total_received += report.new_messages;
@@ -53,14 +58,31 @@ pub async fn run(interval: Option<u64>) -> Result<()> {
             if report.new_messages > 0 {
                 notify_new(report.new_messages);
             }
-            eprintln!("Initial sync: {} event(s), {} new", report.fetched, report.new_messages);
-            write_state(&state_path, &started_at, total_received, poll_secs, None, "ok");
+            eprintln!(
+                "Initial sync: {} event(s), {} new",
+                report.fetched, report.new_messages
+            );
+            write_state(
+                &state_path,
+                &started_at,
+                total_received,
+                poll_secs,
+                None,
+                "ok",
+            );
         }
         Err(e) => {
             let err_msg = format!("{e}");
             eprintln!("Initial sync error: {err_msg}");
             consecutive_errors += 1;
-            write_state(&state_path, &started_at, 0, poll_secs, Some(&err_msg), "error");
+            write_state(
+                &state_path,
+                &started_at,
+                0,
+                poll_secs,
+                Some(&err_msg),
+                "error",
+            );
         }
     }
 
@@ -81,6 +103,12 @@ pub async fn run(interval: Option<u64>) -> Result<()> {
             }
         }
 
+        let local_report = ingest::ingest_pending(&db).await?;
+        total_received += local_report.accepted;
+        if local_report.accepted > 0 {
+            notify_new(local_report.accepted);
+        }
+
         match sync::sync_once(&keys, &client, &db, &relay_urls, timeout).await {
             Ok(report) => {
                 total_received += report.new_messages;
@@ -88,7 +116,14 @@ pub async fn run(interval: Option<u64>) -> Result<()> {
                 if report.new_messages > 0 {
                     notify_new(report.new_messages);
                 }
-                write_state(&state_path, &started_at, total_received, poll_secs, None, "ok");
+                write_state(
+                    &state_path,
+                    &started_at,
+                    total_received,
+                    poll_secs,
+                    None,
+                    "ok",
+                );
             }
             Err(e) => {
                 consecutive_errors += 1;
@@ -97,7 +132,14 @@ pub async fn run(interval: Option<u64>) -> Result<()> {
                 if consecutive_errors <= 3 {
                     eprintln!("Sync error: {err_msg} (retrying in {sleep_secs}s)");
                 }
-                write_state(&state_path, &started_at, total_received, poll_secs, Some(&err_msg), "error");
+                write_state(
+                    &state_path,
+                    &started_at,
+                    total_received,
+                    poll_secs,
+                    Some(&err_msg),
+                    "error",
+                );
             }
         }
     }
@@ -145,7 +187,8 @@ fn acquire_lock(lock_path: &PathBuf) -> Result<()> {
     {
         anyhow::bail!(
             "another mycel watch is running (PID {pid}). \
-             Kill it first or remove {}", lock_path.display()
+             Kill it first or remove {}",
+            lock_path.display()
         );
     }
 
@@ -182,7 +225,10 @@ fn write_state(
     let now = crate::envelope::now_iso8601();
     let pid = std::process::id();
     let error_field = match last_error {
-        Some(e) => format!(",\"last_error\":\"{}\"", e.replace('"', "\\\"").replace('\n', " ")),
+        Some(e) => format!(
+            ",\"last_error\":\"{}\"",
+            e.replace('"', "\\\"").replace('\n', " ")
+        ),
         None => String::new(),
     };
     let json = format!(

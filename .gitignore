@@ -5,3 +5,6 @@
 *.swp
 /target
 contract.json
+.punk/
+target/
+.playwright-mcp/

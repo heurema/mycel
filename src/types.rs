@@ -126,6 +126,8 @@ pub struct MessageMeta {
     pub transport: Option<String>,
     /// Per-transport copy identifier (Nostr event ID or local row ID).
     pub transport_msg_id: Option<String>,
+    /// Source ingress frame ID, if the message was materialized via ingress.
+    pub source_frame_id: Option<String>,
 }
 
 /// A single content part of an Envelope v2 message.
@@ -152,11 +154,11 @@ pub enum Part {
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)] // Used in Envelope.role deserialization and thread message routing
 pub enum AgentRole {
-    User,         // human user
-    Agent,        // general AI agent
-    Coordinator,  // orchestration/routing agent
-    Reviewer,     // code/output review agent
-    Implementer,  // code/task implementation agent
+    User,        // human user
+    Agent,       // general AI agent
+    Coordinator, // orchestration/routing agent
+    Reviewer,    // code/output review agent
+    Implementer, // code/task implementation agent
 }
 
 /// A member of a thread with their join timestamp.
@@ -207,7 +209,10 @@ mod tests {
     #[test]
     fn fn_delivery_status_confirmed() {
         assert_eq!(DeliveryStatus::Confirmed.to_string(), "confirmed");
-        assert_eq!("confirmed".parse::<DeliveryStatus>().unwrap(), DeliveryStatus::Confirmed);
+        assert_eq!(
+            "confirmed".parse::<DeliveryStatus>().unwrap(),
+            DeliveryStatus::Confirmed
+        );
     }
 
     #[test]

@@ -4,7 +4,9 @@ use rusqlite::Connection;
 use std::time::Duration;
 use uuid::Uuid;
 
-use crate::cli::contacts::resolve_address_to_hex;
+use crate::core::directory::{LocalEndpoint, NostrEndpoint};
+use crate::core::ingest;
+use crate::core::router::{self, SendRoute};
 use crate::error::MycelError;
 use crate::types::{DeliveryStatus, Direction, MessageMeta, Part, ReadStatus};
 use crate::{config, crypto, envelope, nostr as mycel_nostr, store};
@@ -22,53 +24,39 @@ pub async fn run(recipient: &str, message: &str, local: bool) -> Result<()> {
     let enc_path = config::config_dir()?.join("key.enc");
     let keys = crypto::load_keys(&enc_path, cfg.identity.storage)?;
     let sender_hex = keys.public_key().to_hex();
+    let db = store::Db::open(&config::data_dir()?.join("mycel.db"))?;
 
-    // Auto-route: "self" always uses local transport (no relay needed)
-    if local || recipient == "self" {
-        run_local(recipient, message, &cfg, &keys, &sender_hex).await
-    } else {
-        // Flush outbox (retry pending messages) before sending a new one
-        let db = store::Db::open(&config::data_dir()?.join("mycel.db"))?;
-        let flush_relay_urls = cfg.relays.urls.clone();
-        if let Err(e) = store::flush_outbox(&db, &keys, flush_relay_urls).await {
-            tracing::warn!("flush_outbox failed: {e}");
+    let route = {
+        let cfg = cfg.clone();
+        let sender_hex = sender_hex.clone();
+        let recipient = recipient.to_string();
+        db.run(move |conn| router::resolve_send_route(conn, &cfg, &sender_hex, &recipient, local))
+            .await?
+    };
+
+    match route {
+        SendRoute::Local(endpoint) => run_local(&endpoint, message, &keys, &sender_hex).await,
+        SendRoute::Nostr(endpoint) => {
+            let flush_relay_urls = cfg.relays.urls.clone();
+            if let Err(e) = store::flush_outbox(&db, &keys, flush_relay_urls).await {
+                tracing::warn!("flush_outbox failed: {e}");
+            }
+            run_nostr(endpoint, message, &cfg, &keys, &sender_hex, db).await
         }
-        run_nostr(recipient, message, &cfg, &keys, &sender_hex, db).await
     }
-}
-
-/// Resolve the local agent alias (or "self") to (pubkey_hex, db_path).
-/// Returns (pubkey_hex, expanded_db_path).
-fn resolve_local_agent(
-    recipient: &str,
-    cfg: &config::Config,
-    sender_hex: &str,
-) -> Result<(String, std::path::PathBuf)> {
-    if recipient == "self" {
-        // "self" writes to the sender's own DB
-        let db_path = config::data_dir()?.join("mycel.db");
-        return Ok((sender_hex.to_string(), db_path));
-    }
-
-    let entry = cfg
-        .local
-        .agents
-        .get(recipient)
-        .ok_or_else(|| anyhow::anyhow!("unknown local agent '{}'; add it to [local.agents] in config.toml", recipient))?;
-
-    let db_path = config::expand_tilde(&entry.db);
-    Ok((entry.pubkey.clone(), db_path))
 }
 
 /// Local transport: write directly into recipient's SQLite DB.
 async fn run_local(
-    recipient: &str,
+    endpoint: &LocalEndpoint,
     message: &str,
-    cfg: &config::Config,
     keys: &Keys,
     sender_hex: &str,
 ) -> Result<()> {
-    let (recipient_hex, recipient_db_path) = resolve_local_agent(recipient, cfg, sender_hex)?;
+    let endpoint_id = endpoint.endpoint_id.clone();
+    let agent_ref = endpoint.agent_ref.clone();
+    let recipient_hex = endpoint.pubkey_hex.clone();
+    let recipient_db_path = endpoint.db_path.clone();
 
     // Generate UUIDv7 msg_id
     let msg_id = Uuid::now_v7().to_string();
@@ -78,7 +66,9 @@ async fn run_local(
         msg_id.clone(),
         sender_hex.to_string(),
         recipient_hex.clone(),
-        vec![Part::TextPart { text: message.to_string() }],
+        vec![Part::TextPart {
+            text: message.to_string(),
+        }],
     );
 
     // Sign the envelope (Contract 3: Schnorr over canonical hash)
@@ -86,7 +76,7 @@ async fn run_local(
     env.sign(&secret_key)?;
 
     // Confirm sig field is present in the serialized envelope
-    let _env_json = serde_json::to_string(&env)?;
+    let env_json = serde_json::to_string(&env)?;
     // The "sig" field is present because env.sig is Some(_) after sign()
 
     let now = now_iso8601();
@@ -102,78 +92,78 @@ async fn run_local(
     let now_clone = now.clone();
     let env_ts = env.ts.clone();
 
-    sender_db.run(move |conn| {
-        insert_local_message(
-            conn,
-            &msg_id_clone,  // nostr_id = msg_id for outbound
-            &msg_id_clone,
-            Direction::Out,
-            &sender_hex_clone,
-            &recipient_hex_clone,
-            &message_clone,
-            DeliveryStatus::Delivered,
-            ReadStatus::Read,
-            &env_ts,
-            &now_clone,
-        )
-    }).await?;
+    sender_db
+        .run(move |conn| {
+            insert_local_message(
+                conn,
+                &msg_id_clone, // nostr_id = msg_id for outbound
+                &msg_id_clone,
+                Direction::Out,
+                &sender_hex_clone,
+                &recipient_hex_clone,
+                &message_clone,
+                DeliveryStatus::Delivered,
+                ReadStatus::Read,
+                &env_ts,
+                &now_clone,
+            )
+        })
+        .await?;
 
     // Open recipient's DB (WAL mode + busy_timeout=10000)
     let recipient_db_path_clone = recipient_db_path.clone();
     let msg_id_for_recipient = msg_id.clone();
     let sender_hex_for_recipient = sender_hex.to_string();
     let recipient_hex_for_recipient = recipient_hex.clone();
-    let message_for_recipient = message.to_string();
+    let env_json_for_recipient = env_json.clone();
     let now_for_recipient = now.clone();
-    let env_ts_for_recipient = env.ts.clone();
 
     // Determine if this is a self-send (same DB); if so reuse sender_db
     let is_self = sender_db_path == recipient_db_path;
 
     if is_self {
-        // Self-send: write inbound copy to the same DB.
-        // Use a distinct nostr_id ("{msg_id}-in") to avoid PK collision with outbound copy.
-        // Use insert_message_v2 (nostr_id PK dedup) instead of insert_message_local (msg_id dedup)
-        // because both copies share the same logical msg_id.
-        let inbound_nostr_id = format!("{}-in", msg_id_for_recipient);
-        let inbound_msg_id = msg_id_for_recipient.clone();
-        sender_db.run(move |conn| {
-            let msg_row = store::MessageRow {
-                nostr_id: inbound_nostr_id,
-                direction: Direction::In,
-                sender: sender_hex_for_recipient,
-                recipient: recipient_hex_for_recipient,
-                content: message_for_recipient,
-                delivery_status: DeliveryStatus::Received,
-                read_status: ReadStatus::Unread,
-                created_at: env_ts_for_recipient,
-                received_at: now_for_recipient,
-                sender_alias: None,
-            };
-            let meta = MessageMeta {
-                msg_id: Some(inbound_msg_id),
-                transport: Some("local".to_string()),
-                ..Default::default()
-            };
-            store::insert_message_v2(conn, &msg_row, &meta)
-        }).await?;
+        sender_db
+            .run(move |conn| {
+                let frame = store::IngressFrameRow {
+                    frame_id: format!("local:{}", msg_id_for_recipient),
+                    transport: "local".to_string(),
+                    endpoint_id: Some(endpoint_id.clone()),
+                    agent_ref: Some(agent_ref.clone()),
+                    transport_msg_id: Some(msg_id_for_recipient),
+                    sender_hint: Some(sender_hex_for_recipient),
+                    recipient_hint: Some(recipient_hex_for_recipient),
+                    envelope_json: env_json_for_recipient,
+                    auth_meta_json: None,
+                    received_at: now_for_recipient,
+                    processed_at: None,
+                    status: "pending".to_string(),
+                    error: None,
+                };
+                let _ = store::insert_ingress_frame(conn, &frame)?;
+                ingest::ingest_pending_conn(conn).map(|_| true)
+            })
+            .await?;
     } else {
         // Different DB: open recipient's DB with WAL + busy_timeout=10000
         let recipient_conn = tokio::task::spawn_blocking(move || -> Result<()> {
             let conn = open_recipient_db(&recipient_db_path_clone)?;
-            insert_local_message(
-                &conn,
-                &msg_id_for_recipient,  // nostr_id = msg_id for recipient
-                &msg_id_for_recipient,
-                Direction::In,
-                &sender_hex_for_recipient,
-                &recipient_hex_for_recipient,
-                &message_for_recipient,
-                DeliveryStatus::Received,
-                ReadStatus::Unread,
-                &env_ts_for_recipient,
-                &now_for_recipient,
-            )?;
+            let frame = store::IngressFrameRow {
+                frame_id: format!("local:{}", msg_id_for_recipient),
+                transport: "local".to_string(),
+                endpoint_id: Some(endpoint_id),
+                agent_ref: Some(agent_ref),
+                transport_msg_id: Some(msg_id_for_recipient),
+                sender_hint: Some(sender_hex_for_recipient),
+                recipient_hint: Some(recipient_hex_for_recipient),
+                envelope_json: env_json_for_recipient,
+                auth_meta_json: None,
+                received_at: now_for_recipient,
+                processed_at: None,
+                status: "pending".to_string(),
+                error: None,
+            };
+            let _ = store::insert_ingress_frame(&conn, &frame)?;
+            let _ = ingest::ingest_pending_conn(&conn)?;
             Ok(())
         })
         .await
@@ -229,13 +219,14 @@ fn insert_local_message(
         reply_to: None,
         transport: Some("local".to_string()),
         transport_msg_id: Some(msg_id.to_string()),
+        source_frame_id: None,
     };
     store::insert_message_local(conn, &msg_row, &meta)
 }
 
 /// Nostr relay transport (original behavior).
 async fn run_nostr(
-    recipient: &str,
+    endpoint: NostrEndpoint,
     message: &str,
     cfg: &config::Config,
     keys: &Keys,
@@ -247,14 +238,15 @@ async fn run_nostr(
     let relay_urls = cfg.relays.urls.clone();
 
     // 4. Resolve recipient
-    let recipient_str = recipient.to_string();
-    let recipient_hex = db.run(move |conn| {
-        resolve_address_to_hex(conn, &recipient_str)
-    }).await?;
-    let recipient_pk = PublicKey::from_hex(&recipient_hex)?;
+    let recipient_hex = endpoint.pubkey_hex;
+    let recipient_pk = endpoint.public_key;
 
     // 5. Build mycel envelope
-    let env = envelope::Envelope::new(sender_hex.to_string(), recipient_hex.clone(), message.to_string());
+    let env = envelope::Envelope::new(
+        sender_hex.to_string(),
+        recipient_hex.clone(),
+        message.to_string(),
+    );
     let envelope_json = serde_json::to_string(&env)?;
 
     // Generate a msg_id for this outbound message
@@ -282,7 +274,8 @@ async fn run_nostr(
             sent_at: None,
         };
         let outbox_row_clone = outbox_row.clone();
-        db.run(move |conn| store::insert_outbox(conn, &outbox_row_clone)).await?;
+        db.run(move |conn| store::insert_outbox(conn, &outbox_row_clone))
+            .await?;
     }
 
     // 6. Build rumor (unsigned event carrying the envelope)
@@ -292,22 +285,31 @@ async fn run_nostr(
     // 7. Connect to relays and publish Gift Wrap
     let client = mycel_nostr::build_client(keys.clone(), &relay_urls)
         .await
-        .map_err(|e| anyhow::anyhow!("{e} — could not connect to relay; check your network connection"))?;
+        .map_err(|e| {
+            anyhow::anyhow!("{e} — could not connect to relay; check your network connection")
+        })?;
 
     // Fetch recipient's kind:10050 inbox relay list; fall back to own config relays if not found
-    let publish_relays = match mycel_nostr::fetch_inbox_relays(&client, &relay_urls, &recipient_pk, timeout).await {
-        Ok(inbox_relays) if !inbox_relays.is_empty() => inbox_relays,
-        Ok(_) => {
-            tracing::warn!("recipient has no kind:10050 inbox relay list; using own config relays");
-            relay_urls.clone()
-        }
-        Err(e) => {
-            tracing::warn!("could not fetch recipient inbox relays: {e}; using own config relays");
-            relay_urls.clone()
-        }
-    };
+    let publish_relays =
+        match mycel_nostr::fetch_inbox_relays(&client, &relay_urls, &recipient_pk, timeout).await {
+            Ok(inbox_relays) if !inbox_relays.is_empty() => inbox_relays,
+            Ok(_) => {
+                tracing::warn!(
+                    "recipient has no kind:10050 inbox relay list; using own config relays"
+                );
+                relay_urls.clone()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "could not fetch recipient inbox relays: {e}; using own config relays"
+                );
+                relay_urls.clone()
+            }
+        };
 
-    let publish_result = mycel_nostr::publish_gift_wrap(&client, &publish_relays, &recipient_pk, rumor, timeout).await;
+    let publish_result =
+        mycel_nostr::publish_gift_wrap(&client, &publish_relays, &recipient_pk, rumor, timeout)
+            .await;
 
     // 8. Update outbox status based on publish result
     let now2 = now_iso8601();
@@ -317,7 +319,8 @@ async fn run_nostr(
             let mid = msg_id.clone();
             let cnt = *ok_count as u32;
             let ts = now2.clone();
-            db.run(move |conn| store::update_outbox_sent(conn, &mid, cnt, &ts)).await?;
+            db.run(move |conn| store::update_outbox_sent(conn, &mid, cnt, &ts))
+                .await?;
         }
         _ => {
             // Failure: increment retry_count and set next_retry_at
@@ -325,7 +328,10 @@ async fn run_nostr(
             let next_retry_at = store::compute_next_retry_at(new_retry_count);
             let mid = msg_id.clone();
             let ts = now2.clone();
-            db.run(move |conn| store::update_outbox_retry(conn, &mid, new_retry_count, &next_retry_at, &ts)).await?;
+            db.run(move |conn| {
+                store::update_outbox_retry(conn, &mid, new_retry_count, &next_retry_at, &ts)
+            })
+            .await?;
         }
     }
 
@@ -336,7 +342,11 @@ async fn run_nostr(
     let failed = total.saturating_sub(ok_count);
 
     // 9. Determine delivery status (C1: 1 relay ack = success)
-    let delivery_status = if ok_count > 0 { DeliveryStatus::Delivered } else { DeliveryStatus::Failed };
+    let delivery_status = if ok_count > 0 {
+        DeliveryStatus::Delivered
+    } else {
+        DeliveryStatus::Failed
+    };
 
     // 10. Store in messages table
     let msg_row = store::MessageRow {
@@ -351,7 +361,8 @@ async fn run_nostr(
         received_at: now,
         sender_alias: None,
     };
-    db.run(move |conn| store::insert_message(conn, &msg_row).map(|_| ())).await?;
+    db.run(move |conn| store::insert_message(conn, &msg_row).map(|_| ()))
+        .await?;
 
     // 11. Disconnect and print result
     client.disconnect().await;

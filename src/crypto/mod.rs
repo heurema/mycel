@@ -12,14 +12,11 @@
 // Migration: v1 files auto-upgraded to v2 on successful unlock.
 
 use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit, OsRng as AesOsRng},
     Aes256Gcm, Nonce,
+    aead::{Aead, AeadCore, KeyInit, OsRng as AesOsRng},
 };
 use anyhow::{Context, Result};
-use argon2::{
-    password_hash::SaltString,
-    Argon2, PasswordHasher,
-};
+use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
 use nostr_sdk::Keys;
 use std::path::Path;
 use zeroize::Zeroizing;
@@ -47,7 +44,7 @@ const V2_MAGIC: &[u8; 4] = b"MYKF";
 const V2_VERSION: u8 = 0x02;
 // Salt: 16 raw bytes at offset 12. Nonce: 12 bytes at offset 28.
 const V2_HEADER_LEN: usize = 40; // 4 + 1 + 4 + 1 + 1 + 1 + 16 + 12
-const V2_M_COST: u32 = 65536;   // KiB (64 MiB)
+const V2_M_COST: u32 = 65536; // KiB (64 MiB)
 const V2_T_COST: u8 = 3;
 const V2_P_COST: u8 = 4;
 const V2_OUTPUT_LEN: u8 = 32;
@@ -63,7 +60,12 @@ struct KdfParams {
 
 impl KdfParams {
     const fn v2_default() -> Self {
-        Self { m_cost: V2_M_COST, t_cost: V2_T_COST, p_cost: V2_P_COST, output_len: V2_OUTPUT_LEN }
+        Self {
+            m_cost: V2_M_COST,
+            t_cost: V2_T_COST,
+            p_cost: V2_P_COST,
+            output_len: V2_OUTPUT_LEN,
+        }
     }
 }
 
@@ -101,7 +103,11 @@ fn try_load_keychain() -> Result<Option<String>> {
 fn argon2_v1() -> Result<Argon2<'static>> {
     let params = argon2::Params::new(V1_M_COST, V1_T_COST, V1_P_COST, Some(V1_OUTPUT_LEN))
         .map_err(|e| anyhow::anyhow!("argon2 v1 params: {e}"))?;
-    Ok(Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params))
+    Ok(Argon2::new(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        params,
+    ))
 }
 
 fn derive_key_v1(passphrase: &str, salt: &SaltString) -> Result<[u8; 32]> {
@@ -109,10 +115,15 @@ fn derive_key_v1(passphrase: &str, salt: &SaltString) -> Result<[u8; 32]> {
     let hash = argon2
         .hash_password(passphrase.as_bytes(), salt)
         .map_err(|e| anyhow::anyhow!("argon2 v1 error: {e}"))?;
-    let hash_bytes = hash.hash.ok_or_else(|| anyhow::anyhow!("argon2 hash missing"))?;
+    let hash_bytes = hash
+        .hash
+        .ok_or_else(|| anyhow::anyhow!("argon2 hash missing"))?;
     let hash_slice = hash_bytes.as_bytes();
     if hash_slice.len() < 32 {
-        return Err(anyhow::anyhow!("argon2 hash too short: {} bytes", hash_slice.len()));
+        return Err(anyhow::anyhow!(
+            "argon2 hash too short: {} bytes",
+            hash_slice.len()
+        ));
     }
     let mut key = [0u8; 32];
     key.copy_from_slice(&hash_slice[..32]);
@@ -125,11 +136,20 @@ fn derive_key_v1(passphrase: &str, salt: &SaltString) -> Result<[u8; 32]> {
 
 fn derive_key_v2(passphrase: &str, salt: &[u8], params: &KdfParams) -> Result<[u8; 32]> {
     let argon2_params = argon2::Params::new(
-        params.m_cost, params.t_cost as u32, params.p_cost as u32, Some(params.output_len as usize),
-    ).map_err(|e| anyhow::anyhow!("argon2 v2 params: {e}"))?;
-    let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, argon2_params);
+        params.m_cost,
+        params.t_cost as u32,
+        params.p_cost as u32,
+        Some(params.output_len as usize),
+    )
+    .map_err(|e| anyhow::anyhow!("argon2 v2 params: {e}"))?;
+    let argon2 = Argon2::new(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        argon2_params,
+    );
     let mut key = [0u8; 32];
-    argon2.hash_password_into(passphrase.as_bytes(), salt, &mut key)
+    argon2
+        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
         .map_err(|e| anyhow::anyhow!("argon2 v2 KDF: {e}"))?;
     Ok(key)
 }
@@ -168,22 +188,22 @@ pub fn store_key_file(enc_path: &Path, passphrase: &str, secret_hex: &str) -> Re
     let params = KdfParams::v2_default();
     let salt = generate_raw_salt()?;
     let key_bytes = derive_key_v2(passphrase, &salt, &params)?;
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes)
-        .map_err(|e| anyhow::anyhow!("aes-gcm init: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| anyhow::anyhow!("aes-gcm init: {e}"))?;
     let nonce = Aes256Gcm::generate_nonce(&mut AesOsRng);
     let ciphertext = cipher
         .encrypt(&nonce, secret_hex.as_bytes())
         .map_err(|e| anyhow::anyhow!("aes-gcm encrypt: {e}"))?;
 
     let mut data = Vec::with_capacity(V2_HEADER_LEN + ciphertext.len());
-    data.extend_from_slice(V2_MAGIC);                    // 4
-    data.push(V2_VERSION);                                // 1
+    data.extend_from_slice(V2_MAGIC); // 4
+    data.push(V2_VERSION); // 1
     data.extend_from_slice(&params.m_cost.to_le_bytes()); // 4
-    data.push(params.t_cost);                             // 1
-    data.push(params.p_cost);                             // 1
-    data.push(params.output_len);                         // 1
-    data.extend_from_slice(&salt);                        // 16
-    data.extend_from_slice(nonce.as_slice());             // 12
+    data.push(params.t_cost); // 1
+    data.push(params.p_cost); // 1
+    data.push(params.output_len); // 1
+    data.extend_from_slice(&salt); // 16
+    data.extend_from_slice(nonce.as_slice()); // 12
     debug_assert_eq!(data.len(), V2_HEADER_LEN);
     data.extend_from_slice(&ciphertext);
 
@@ -195,8 +215,8 @@ pub fn store_key_file(enc_path: &Path, passphrase: &str, secret_hex: &str) -> Re
 fn store_key_file_v1(enc_path: &Path, passphrase: &str, secret_hex: &str) -> Result<()> {
     let salt = SaltString::generate(&mut AesOsRng);
     let key_bytes = derive_key_v1(passphrase, &salt)?;
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes)
-        .map_err(|e| anyhow::anyhow!("aes-gcm init: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| anyhow::anyhow!("aes-gcm init: {e}"))?;
     let nonce = Aes256Gcm::generate_nonce(&mut AesOsRng);
     let ciphertext = cipher
         .encrypt(&nonce, secret_hex.as_bytes())
@@ -233,10 +253,11 @@ fn load_v1(data: &[u8], passphrase: &str) -> Result<Zeroizing<String>> {
         return Err(anyhow::anyhow!("key.enc v1 too short"));
     }
     let salt_str = std::str::from_utf8(&data[..V1_SALT_LEN])?;
-    let salt = SaltString::from_b64(salt_str).map_err(|e| anyhow::anyhow!("invalid v1 salt: {e}"))?;
+    let salt =
+        SaltString::from_b64(salt_str).map_err(|e| anyhow::anyhow!("invalid v1 salt: {e}"))?;
     let key_bytes = derive_key_v1(passphrase, &salt)?;
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes)
-        .map_err(|e| anyhow::anyhow!("aes-gcm init: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| anyhow::anyhow!("aes-gcm init: {e}"))?;
     let nonce = Nonce::from_slice(&data[V1_SALT_LEN..V1_SALT_LEN + V1_NONCE_LEN]);
     let plaintext = cipher
         .decrypt(nonce, &data[V1_SALT_LEN + V1_NONCE_LEN..])
@@ -263,8 +284,8 @@ fn load_v2(data: &[u8], passphrase: &str) -> Result<Zeroizing<String>> {
     let ciphertext = &data[40..];
 
     let key_bytes = derive_key_v2(passphrase, salt, &params)?;
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes)
-        .map_err(|e| anyhow::anyhow!("aes-gcm init: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| anyhow::anyhow!("aes-gcm init: {e}"))?;
     let plaintext = cipher
         .decrypt(nonce, ciphertext)
         .map_err(|_| anyhow::anyhow!("decryption failed — wrong passphrase?"))?;
@@ -382,8 +403,7 @@ pub fn load_keys(enc_path: &Path, storage: IdentityStorage) -> Result<Keys> {
 fn load_from_file(enc_path: &Path) -> Result<Keys> {
     let passphrase = get_passphrase("Enter passphrase to unlock your key: ")?;
     let (hex, was_v1) = load_key_file(enc_path, &passphrase)?;
-    let keys = Keys::parse(&hex)
-        .map_err(|e| anyhow::anyhow!("invalid key from file: {e}"))?;
+    let keys = Keys::parse(&hex).map_err(|e| anyhow::anyhow!("invalid key from file: {e}"))?;
 
     // Auto-migrate v1 → v2
     if was_v1 {
@@ -501,7 +521,8 @@ mod tests {
         assert_eq!(&v2_data[..4], V2_MAGIC, "file should now be v2");
 
         // Reload — should work as v2 now
-        let (reloaded, was_v1_after) = load_key_file(&enc_path, passphrase).expect("load v2 after migration");
+        let (reloaded, was_v1_after) =
+            load_key_file(&enc_path, passphrase).expect("load v2 after migration");
         assert!(!was_v1_after, "should detect as v2 after migration");
         assert_eq!(*reloaded, *secret_hex, "key must survive migration");
     }

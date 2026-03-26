@@ -21,8 +21,8 @@ cargo clippy           # lint (0 warnings expected)
 
 ## Architecture
 
-mycel stays mailbox-first and sync-on-command by default. The accepted boundary is: canonical envelope + router + unified ingress, with `local-direct` as the default same-user path and `nostr` as the remote async path.
-See `docs/architecture.md` for the current architecture map, `docs/rfc-v0.2-phase0-contracts.md` for message-level contracts, `docs/rfc-local-first-transport-boundary.md` for the transport boundary, and `docs/plan-local-agent-mesh.md` for the phased implementation plan.
+v0.2 = sync-on-command + local transport + threads. Each CLI command connects, does work, exits.
+See docs/architecture.md for full design, docs/rfc-v0.2-phase0-contracts.md for v0.2 contracts.
 
 Structure (single crate):
 ```
@@ -52,14 +52,12 @@ src/
 
 - Envelope v2: msg_id (UUIDv7 String), thread_id, reply_to, role, parts[] (TextPart/DataPart)
 - Backward compat: v1 envelopes deserialized via EnvelopeWire adapter, msg→parts auto-conversion
-- Local-first boundary: canonical envelope + router + unified ingress are the target core seam
-- `local-direct` via SQLite/WAL remains the default same-user local path; `local-gateway` is only an optional fallback
-- `self` alias auto-routes to the local path (no `--local` flag needed)
+- Local transport: direct SQLite write to recipient DB, Schnorr signed, msg_id dedup
+- "self" alias: auto-routes to local transport (no --local flag needed)
 - Passphrase: env var → keychain cache → TTY prompt (non-interactive agent path)
-- DB migration: additive and idempotent where possible; avoid big-bang rewrites
-- `msg_id` is the logical identity across copies; transport-specific IDs stay transport-scoped
+- DB migration: idempotent v1→v2, runs on open() when user_version < 2
+- UNIQUE index on (msg_id, direction) — allows self-send in+out copies
 - Thread fan-out: max 10 members, NIP-17 Gift Wrap per member + self-copy
-- A2A is a gateway/adapter, not core truth; MCP is allowed only as an outer adapter
 
 ## Conventions
 
@@ -70,4 +68,4 @@ src/
 - Keys: OS keychain (keyring crate) or `~/.config/mycel/key.enc` (argon2id+AES-256-GCM)
 - Nostr jargon hidden from UX — use "address" not "npub", "relay" not "Nostr relay"
 - Part serde: `#[serde(tag = "type")]` with `#[serde(rename = "text")]` / `#[serde(rename = "data")]`
-- MCP is allowed only as an outer adapter over normalized mailbox operations; it is never a transport or source of truth
+- No MCP adapter — CLI + JSONL is sufficient for agent integration

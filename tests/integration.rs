@@ -193,11 +193,29 @@ fn test_local_dedup_msg_id() {
     let msg_id = Uuid::now_v7().to_string();
 
     // First insert
-    let first = insert_local_msg(&conn, &msg_id, "in", "sender", "recipient", "hello", &msg_id, "local");
+    let first = insert_local_msg(
+        &conn,
+        &msg_id,
+        "in",
+        "sender",
+        "recipient",
+        "hello",
+        &msg_id,
+        "local",
+    );
     assert!(first, "first insert must succeed");
 
     // Second insert with same msg_id (different nostr_id) — must be ignored
-    let second = insert_local_msg(&conn, "different-nostr-id", "in", "sender", "recipient", "hello", &msg_id, "local");
+    let second = insert_local_msg(
+        &conn,
+        "different-nostr-id",
+        "in",
+        "sender",
+        "recipient",
+        "hello",
+        &msg_id,
+        "local",
+    );
     assert!(!second, "duplicate msg_id must be silently ignored");
 
     // Exactly one row
@@ -242,12 +260,7 @@ async fn test_integration_send_receive_roundtrip() {
 
     // Publish gift wrap
     let output = sender_client
-        .gift_wrap_to(
-            std::iter::once(TEST_RELAY),
-            &receiver_pk,
-            rumor,
-            [],
-        )
+        .gift_wrap_to(std::iter::once(TEST_RELAY), &receiver_pk, rumor, [])
         .await
         .expect("gift_wrap_to");
 
@@ -280,11 +293,7 @@ async fn test_integration_send_receive_roundtrip() {
         ));
 
     let events = receiver_client
-        .fetch_events_from(
-            std::iter::once(TEST_RELAY),
-            filter,
-            INTEGRATION_TIMEOUT,
-        )
+        .fetch_events_from(std::iter::once(TEST_RELAY), filter, INTEGRATION_TIMEOUT)
         .await
         .expect("fetch_events_from");
 
@@ -312,7 +321,10 @@ async fn test_integration_send_receive_roundtrip() {
     sender_client.disconnect().await;
     receiver_client.disconnect().await;
 
-    assert!(found, "sent message not found after roundtrip via {TEST_RELAY}");
+    assert!(
+        found,
+        "sent message not found after roundtrip via {TEST_RELAY}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -365,20 +377,23 @@ fn test_thread_create_and_send() {
     // 1. thread create: insert thread row with alice + bob as members
     let topic = "coordination";
     // thread_id = SHA-256(topic) — mirroring create_thread logic
-    use nostr_sdk::nostr::hashes::sha256::Hash as Sha256Hash;
     use nostr_sdk::nostr::hashes::Hash;
+    use nostr_sdk::nostr::hashes::sha256::Hash as Sha256Hash;
     let thread_id = format!("{:x}", Sha256Hash::hash(topic.as_bytes()));
 
     let members_json = serde_json::json!([
         {"pubkey": alice_hex, "joined_at": "2026-03-23T00:00:00Z"},
         {"pubkey": bob_hex, "joined_at": "2026-03-23T00:00:00Z"},
-    ]).to_string();
+    ])
+    .to_string();
 
-    let inserted = conn.execute(
-        "INSERT OR IGNORE INTO threads (thread_id, subject, members, created_at, updated_at)
+    let inserted = conn
+        .execute(
+            "INSERT OR IGNORE INTO threads (thread_id, subject, members, created_at, updated_at)
          VALUES (?1, ?2, ?3, '2026-03-23T00:00:00Z', '2026-03-23T00:00:00Z')",
-        rusqlite::params![thread_id, topic, members_json],
-    ).unwrap();
+            rusqlite::params![thread_id, topic, members_json],
+        )
+        .unwrap();
     assert!(inserted > 0, "thread create: row should be inserted");
 
     // 2. thread send: build Kind 14 rumor locally and record in DB
@@ -393,17 +408,31 @@ fn test_thread_create_and_send() {
         .tag(Tag::public_key(alice_keys.public_key()))
         .tag(Tag::public_key(bob_pk))
         .tag(Tag::custom(TagKind::Subject, ["coordination"]))
-        .tag(Tag::custom(TagKind::custom("mycel-thread-id"), [thread_id.as_str()]))
-        .tag(Tag::custom(TagKind::custom("mycel-msg-id"), [msg_id.as_str()]))
+        .tag(Tag::custom(
+            TagKind::custom("mycel-thread-id"),
+            [thread_id.as_str()],
+        ))
+        .tag(Tag::custom(
+            TagKind::custom("mycel-msg-id"),
+            [msg_id.as_str()],
+        ))
         .build(sender_pk);
 
     // Verify rumor is Kind::ChatMessage (Kind 14)
-    assert_eq!(rumor.kind, Kind::ChatMessage, "rumor must be Kind 14 (ChatMessage)");
+    assert_eq!(
+        rumor.kind,
+        Kind::ChatMessage,
+        "rumor must be Kind 14 (ChatMessage)"
+    );
 
     // Verify custom tags are present in the rumor
     let rumor_tags: Vec<Vec<String>> = rumor.tags.iter().map(|t| t.as_slice().to_vec()).collect();
-    let has_thread_id_tag = rumor_tags.iter().any(|t| t.len() >= 2 && t[0] == "mycel-thread-id" && t[1] == thread_id);
-    let has_msg_id_tag = rumor_tags.iter().any(|t| t.len() >= 2 && t[0] == "mycel-msg-id" && t[1] == msg_id);
+    let has_thread_id_tag = rumor_tags
+        .iter()
+        .any(|t| t.len() >= 2 && t[0] == "mycel-thread-id" && t[1] == thread_id);
+    let has_msg_id_tag = rumor_tags
+        .iter()
+        .any(|t| t.len() >= 2 && t[0] == "mycel-msg-id" && t[1] == msg_id);
     assert!(has_thread_id_tag, "rumor must have mycel-thread-id tag");
     assert!(has_msg_id_tag, "rumor must have mycel-msg-id tag");
 
@@ -451,22 +480,33 @@ fn test_thread_reply_chain() {
     let alice_hex = alice_keys.public_key().to_hex();
 
     let topic = "reply-test";
-    use nostr_sdk::nostr::hashes::sha256::Hash as Sha256Hash;
     use nostr_sdk::nostr::hashes::Hash;
+    use nostr_sdk::nostr::hashes::sha256::Hash as Sha256Hash;
     let thread_id = format!("{:x}", Sha256Hash::hash(topic.as_bytes()));
 
     // Insert thread
-    let members_json = serde_json::json!([{"pubkey": alice_hex, "joined_at": "2026-03-23T00:00:00Z"}]).to_string();
+    let members_json =
+        serde_json::json!([{"pubkey": alice_hex, "joined_at": "2026-03-23T00:00:00Z"}]).to_string();
     conn.execute(
         "INSERT OR IGNORE INTO threads (thread_id, subject, members, created_at, updated_at)
          VALUES (?1, ?2, ?3, '2026-03-23T00:00:00Z', '2026-03-23T00:00:00Z')",
         rusqlite::params![thread_id, topic, members_json],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Message 1 (root)
     let msg1_id = Uuid::now_v7().to_string();
     let event1_id = "event_hex_001"; // mock NIP-17 event_id for msg1
-    insert_thread_msg(&conn, event1_id, &alice_hex, &thread_id, &msg1_id, None, "root message", event1_id);
+    insert_thread_msg(
+        &conn,
+        event1_id,
+        &alice_hex,
+        &thread_id,
+        &msg1_id,
+        None,
+        "root message",
+        event1_id,
+    );
 
     // Message 2 (reply to msg1) — e-tag must reference event1_id
     let msg2_id = Uuid::now_v7().to_string();
@@ -481,26 +521,53 @@ fn test_thread_reply_chain() {
             |row| row.get(0),
         )
         .ok();
-    assert_eq!(transport_id_for_msg1.as_deref(), Some(event1_id), "e-tag: must resolve msg1_id to event1_id");
+    assert_eq!(
+        transport_id_for_msg1.as_deref(),
+        Some(event1_id),
+        "e-tag: must resolve msg1_id to event1_id"
+    );
 
     // Build reply rumor with e-tag referencing event1_id
     let event1_nid = EventId::from_hex(
         // Use a valid 32-byte hex for the mock event_id in test
         "0000000000000000000000000000000000000000000000000000000000000001",
-    ).unwrap();
+    )
+    .unwrap();
     let reply_rumor: UnsignedEvent = EventBuilder::new(Kind::ChatMessage, "reply to root")
         .tag(Tag::public_key(alice_keys.public_key()))
         .tag(Tag::event(event1_nid))
-        .tag(Tag::custom(TagKind::custom("mycel-thread-id"), [thread_id.as_str()]))
-        .tag(Tag::custom(TagKind::custom("mycel-msg-id"), [msg2_id.as_str()]))
+        .tag(Tag::custom(
+            TagKind::custom("mycel-thread-id"),
+            [thread_id.as_str()],
+        ))
+        .tag(Tag::custom(
+            TagKind::custom("mycel-msg-id"),
+            [msg2_id.as_str()],
+        ))
         .build(alice_keys.public_key());
 
     // Verify e-tag is in the reply rumor
-    let reply_tags: Vec<Vec<String>> = reply_rumor.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+    let reply_tags: Vec<Vec<String>> = reply_rumor
+        .tags
+        .iter()
+        .map(|t| t.as_slice().to_vec())
+        .collect();
     let has_e_tag = reply_tags.iter().any(|t| t.len() >= 2 && t[0] == "e");
-    assert!(has_e_tag, "reply rumor must have an e-tag referencing parent event");
+    assert!(
+        has_e_tag,
+        "reply rumor must have an e-tag referencing parent event"
+    );
 
-    insert_thread_msg(&conn, event2_id, &alice_hex, &thread_id, &msg2_id, Some(&msg1_id), "reply to root", event2_id);
+    insert_thread_msg(
+        &conn,
+        event2_id,
+        &alice_hex,
+        &thread_id,
+        &msg2_id,
+        Some(&msg1_id),
+        "reply to root",
+        event2_id,
+    );
 
     // Message 3 (reply to msg2)
     let msg3_id = Uuid::now_v7().to_string();
@@ -513,15 +580,32 @@ fn test_thread_reply_chain() {
             |row| row.get(0),
         )
         .ok();
-    assert_eq!(transport_id_for_msg2.as_deref(), Some(event2_id), "e-tag: must resolve msg2_id to event2_id");
+    assert_eq!(
+        transport_id_for_msg2.as_deref(),
+        Some(event2_id),
+        "e-tag: must resolve msg2_id to event2_id"
+    );
 
-    insert_thread_msg(&conn, event3_id, &alice_hex, &thread_id, &msg3_id, Some(&msg2_id), "reply to reply", event3_id);
+    insert_thread_msg(
+        &conn,
+        event3_id,
+        &alice_hex,
+        &thread_id,
+        &msg3_id,
+        Some(&msg2_id),
+        "reply to reply",
+        event3_id,
+    );
 
     // Verify all 3 messages are in the thread ordered by created_at
     let chain: Vec<(String, Option<String>)> = conn
-        .prepare("SELECT msg_id, reply_to FROM messages WHERE thread_id = ?1 ORDER BY created_at ASC")
+        .prepare(
+            "SELECT msg_id, reply_to FROM messages WHERE thread_id = ?1 ORDER BY created_at ASC",
+        )
         .unwrap()
-        .query_map(rusqlite::params![thread_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map(rusqlite::params![thread_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .unwrap()
         .filter_map(|r| r.ok())
         .collect();
@@ -609,13 +693,30 @@ fn test_v2_msg_id_dedup_on_retry() {
 
     // First delivery: original nostr event ID
     let first_nostr_id = "nostr_event_id_original_aaaa1111";
-    let inserted = insert_v2_msg(&conn, first_nostr_id, sender, recipient, "hello from v2", &msg_id);
+    let inserted = insert_v2_msg(
+        &conn,
+        first_nostr_id,
+        sender,
+        recipient,
+        "hello from v2",
+        &msg_id,
+    );
     assert!(inserted, "first delivery must be inserted");
 
     // Retry: same msg_id, different nostr event ID (outbox retry scenario)
     let retry_nostr_id = "nostr_event_id_retry_bbbb2222";
-    let retry_inserted = insert_v2_msg(&conn, retry_nostr_id, sender, recipient, "hello from v2", &msg_id);
-    assert!(!retry_inserted, "v2 retry with same msg_id must be deduplicated (not inserted)");
+    let retry_inserted = insert_v2_msg(
+        &conn,
+        retry_nostr_id,
+        sender,
+        recipient,
+        "hello from v2",
+        &msg_id,
+    );
+    assert!(
+        !retry_inserted,
+        "v2 retry with same msg_id must be deduplicated (not inserted)"
+    );
 
     // Inbox must show exactly one message
     let count: i64 = conn
@@ -625,7 +726,10 @@ fn test_v2_msg_id_dedup_on_retry() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(count, 1, "dedup: inbox must show message exactly once, not twice");
+    assert_eq!(
+        count, 1,
+        "dedup: inbox must show message exactly once, not twice"
+    );
 
     // The stored message must be the first delivery's nostr_id
     let stored_nostr_id: String = conn
@@ -635,15 +739,18 @@ fn test_v2_msg_id_dedup_on_retry() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(stored_nostr_id, first_nostr_id, "first delivery wins; retry is dropped");
+    assert_eq!(
+        stored_nostr_id, first_nostr_id,
+        "first delivery wins; retry is dropped"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// QA: Envelope v2 parsing, msg_id dedup, ACK handling — adversarial tests
-// (Steps 0 + 4: parse_and_validate, insert_message_v2, handle_incoming_ack)
+// QA: Envelope validation rules, msg_id dedup, ACK handling — adversarial tests
+// using isolated schema mirrors and direct inserts for specific invariants.
 // ---------------------------------------------------------------------------
 
-/// Full production schema including acks table (v4).
+/// Isolated schema mirror for dedup/ACK QA.
 /// The existing SCHEMA constant above has only (msg_id) unique index — which differs
 /// from production (msg_id, direction). Tests that need direction-aware dedup use
 /// SCHEMA_WITH_ACKS below.
@@ -742,7 +849,7 @@ fn insert_v2_msg_dedup(
     rows > 0
 }
 
-/// Insert an ACK using the same anti-storm logic as handle_incoming_ack.
+/// Insert an ACK using the same anti-storm logic as the ingress ACK path.
 /// Returns (anti_storm_blocked, insert_succeeded).
 fn insert_ack_with_antistorm(
     conn: &Connection,
@@ -780,19 +887,25 @@ fn qa_v2_empty_msg_id_no_dedup() {
     let sender = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
     let recipient = "1122334455667788990011223344556677889900112233445566778899001122";
 
-    // parse_and_validate: env.v==2 && !env.msg_id.is_empty() → false → meta.msg_id = None
-    // So the empty-msg_id path uses legacy nostr_id PK dedup.
+    // The ingest path keeps msg_id=None when env.v==2 but msg_id is empty,
+    // so the empty-msg_id path uses legacy nostr_id PK dedup.
     let first = insert_v2_msg_dedup(&conn, "nostr_id_a", "in", sender, recipient, "msg A", "");
     let second = insert_v2_msg_dedup(&conn, "nostr_id_b", "in", sender, recipient, "msg B", "");
 
     assert!(first, "first insert with empty msg_id must succeed");
-    assert!(second, "second insert with different nostr_id + empty msg_id must also succeed (no dedup key)");
+    assert!(
+        second,
+        "second insert with different nostr_id + empty msg_id must also succeed (no dedup key)"
+    );
 
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
         .unwrap();
     // If count == 1, empty msg_id is acting as a dedup key — that would be a bug.
-    assert_eq!(count, 2, "empty msg_id must NOT act as dedup key; both messages must be stored");
+    assert_eq!(
+        count, 2,
+        "empty msg_id must NOT act as dedup key; both messages must be stored"
+    );
 }
 
 // ── Test 2 ───────────────────────────────────────────────────────────────────
@@ -812,7 +925,10 @@ fn qa_v2_empty_parts_with_legacy_msg_field() {
     let val: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(val["v"], 2);
     // Wire has empty parts
-    assert!(val["parts"].as_array().unwrap().is_empty(), "wire parts must be empty");
+    assert!(
+        val["parts"].as_array().unwrap().is_empty(),
+        "wire parts must be empty"
+    );
     // The msg field is present
     assert_eq!(val["msg"].as_str().unwrap(), "hybrid content");
 
@@ -831,7 +947,11 @@ fn qa_v2_empty_parts_with_legacy_msg_field() {
     // otherwise use msg. Since conversion always populates parts from msg, content = "hybrid content".
     // (We verify the rule since we cannot call extract_content directly.)
     let expected_content = "hybrid content";
-    assert_eq!(expected_content, val["msg"].as_str().unwrap(), "content should match msg field");
+    assert_eq!(
+        expected_content,
+        val["msg"].as_str().unwrap(),
+        "content should match msg field"
+    );
 }
 
 // ── Test 3 ───────────────────────────────────────────────────────────────────
@@ -843,18 +963,25 @@ fn qa_ack_for_nonexistent_msg_id() {
     let sender = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
     let ghost_msg_id = "nonexistent-message-id-99999";
 
-    // handle_incoming_ack does not check whether original_msg_id exists in messages.
-    let (storm_blocked, inserted) = insert_ack_with_antistorm(
-        &conn, ghost_msg_id, sender, "2026-03-25T00:00:00Z",
+    // The ingest ACK path does not check whether original_msg_id exists in messages.
+    let (storm_blocked, inserted) =
+        insert_ack_with_antistorm(&conn, ghost_msg_id, sender, "2026-03-25T00:00:00Z");
+    assert!(
+        !storm_blocked,
+        "no prior ACK exists, anti-storm must not fire"
     );
-    assert!(!storm_blocked, "no prior ACK exists, anti-storm must not fire");
-    assert!(inserted, "ACK for nonexistent msg_id must be stored (no FK validation)");
+    assert!(
+        inserted,
+        "ACK for nonexistent msg_id must be stored (no FK validation)"
+    );
 
-    let stored: Option<String> = conn.query_row(
-        "SELECT msg_id FROM acks WHERE msg_id = ?1",
-        rusqlite::params![ghost_msg_id],
-        |row| row.get(0),
-    ).ok();
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT msg_id FROM acks WHERE msg_id = ?1",
+            rusqlite::params![ghost_msg_id],
+            |row| row.get(0),
+        )
+        .ok();
     assert!(
         stored.is_some(),
         "orphan ACK (for unknown msg_id) is accepted without FK check — accumulation risk"
@@ -874,12 +1001,15 @@ fn qa_ack_empty_original_msg_id() {
     // Empty string is a valid SQLite PK value — first insert succeeds.
     // No assertion on first here — behaviour may vary.
 
-    let (storm_blocked2, second) = insert_ack_with_antistorm(&conn, "", sender2, "2026-03-25T00:00:01Z");
+    let (storm_blocked2, second) =
+        insert_ack_with_antistorm(&conn, "", sender2, "2026-03-25T00:00:01Z");
     // The anti-storm query filters by (msg_id, ack_sender), so sender2 should not be blocked.
     // But INSERT OR IGNORE on the PK (msg_id alone) will block sender2's insert if sender1 succeeded.
 
     let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM acks WHERE msg_id = ''", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM acks WHERE msg_id = ''", [], |row| {
+            row.get(0)
+        })
         .unwrap();
 
     if first {
@@ -888,8 +1018,14 @@ fn qa_ack_empty_original_msg_id() {
             !second,
             "BUG: acks PK is msg_id alone — second empty-string ACK from different sender is silently dropped"
         );
-        assert_eq!(total, 1, "only one row with empty msg_id can exist (PK constraint)");
-        assert!(!storm_blocked2, "sender2 is not blocked by anti-storm (different sender), but IS blocked by PK");
+        assert_eq!(
+            total, 1,
+            "only one row with empty msg_id can exist (PK constraint)"
+        );
+        assert!(
+            !storm_blocked2,
+            "sender2 is not blocked by anti-storm (different sender), but IS blocked by PK"
+        );
     }
     // If neither was stored, the code is rejecting empty msg_id — also acceptable.
 }
@@ -910,16 +1046,21 @@ fn qa_ack_duplicate_within_antistorm_window() {
     ).unwrap();
 
     // Second ACK arrives immediately after (within 60s) — anti-storm must suppress it.
-    let (storm2, inserted2) = insert_ack_with_antistorm(
-        &conn, msg_id, sender, "2026-03-25T00:00:05Z",
+    let (storm2, inserted2) =
+        insert_ack_with_antistorm(&conn, msg_id, sender, "2026-03-25T00:00:05Z");
+    assert!(
+        storm2,
+        "second ACK within 60s must be suppressed by anti-storm window"
     );
-    assert!(storm2, "second ACK within 60s must be suppressed by anti-storm window");
     assert!(!inserted2, "second ACK must not be inserted");
 
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM acks", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 1, "only one ACK row must exist after duplicate suppression");
+    assert_eq!(
+        count, 1,
+        "only one ACK row must exist after duplicate suppression"
+    );
 }
 
 // ── Test 6 ───────────────────────────────────────────────────────────────────
@@ -938,13 +1079,13 @@ fn qa_ack_duplicate_after_antistorm_window_bug() {
         "INSERT INTO acks (msg_id, ack_sender, ack_status, created_at)
          VALUES (?1, ?2, 'acknowledged', datetime('now', '-70 seconds'))",
         rusqlite::params![msg_id, sender],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Now try to insert a second ACK. Anti-storm check should PASS (70s > 60s window).
     // But the INSERT OR IGNORE will be blocked by the PRIMARY KEY constraint.
-    let (storm_blocked, inserted) = insert_ack_with_antistorm(
-        &conn, msg_id, sender, "2026-03-25T00:00:00Z",
-    );
+    let (storm_blocked, inserted) =
+        insert_ack_with_antistorm(&conn, msg_id, sender, "2026-03-25T00:00:00Z");
 
     // Anti-storm check should NOT fire (70s elapsed > 60s window)
     assert!(
@@ -976,7 +1117,7 @@ fn qa_envelope_v3_rejected() {
     let v = val["v"].as_u64().unwrap() as u8;
 
     assert_eq!(v, 3, "v=3 must deserialize without panic");
-    // parse_and_validate: if env.v != 1 && env.v != 2 → return Ok(None)
+    // The ingest version gate rejects any envelope version outside {1,2}.
     let rejected = v != 1 && v != 2;
     assert!(rejected, "v=3 must be rejected by the version gate");
 }
@@ -995,7 +1136,10 @@ fn qa_envelope_v0_rejected() {
     let val0: serde_json::Value = serde_json::from_str(&json_v0).unwrap();
     let v0 = val0["v"].as_u64().unwrap_or(0) as u8;
     assert_eq!(v0, 0);
-    assert!(v0 != 1 && v0 != 2, "v=0 must be rejected by the version gate");
+    assert!(
+        v0 != 1 && v0 != 2,
+        "v=0 must be rejected by the version gate"
+    );
 
     // Missing v field: EnvelopeWire has #[serde(default)] on v, so it becomes 0
     let json_no_v = format!(
@@ -1005,7 +1149,10 @@ fn qa_envelope_v0_rejected() {
     // In JSON the field is absent; serde's default for u8 is 0
     let v_missing = val_no_v["v"].as_u64().unwrap_or(0) as u8;
     assert_eq!(v_missing, 0, "missing v field must default to 0");
-    assert!(v_missing != 1 && v_missing != 2, "missing v field (v=0) must be rejected");
+    assert!(
+        v_missing != 1 && v_missing != 2,
+        "missing v field (v=0) must be rejected"
+    );
 }
 
 // ── Test 9 ───────────────────────────────────────────────────────────────────
@@ -1017,14 +1164,37 @@ fn qa_dedup_same_msg_id_same_direction() {
     let recipient = "1122334455667788990011223344556677889900112233445566778899001122";
     let msg_id = Uuid::now_v7().to_string();
 
-    let first = insert_v2_msg_dedup(&conn, "nostr_in_1", "in", sender, recipient, "original", &msg_id);
+    let first = insert_v2_msg_dedup(
+        &conn,
+        "nostr_in_1",
+        "in",
+        sender,
+        recipient,
+        "original",
+        &msg_id,
+    );
     assert!(first, "first insert must succeed");
 
-    let second = insert_v2_msg_dedup(&conn, "nostr_in_2", "in", sender, recipient, "duplicate", &msg_id);
-    assert!(!second, "same msg_id + same direction must be deduplicated (WHERE NOT EXISTS blocks it)");
+    let second = insert_v2_msg_dedup(
+        &conn,
+        "nostr_in_2",
+        "in",
+        sender,
+        recipient,
+        "duplicate",
+        &msg_id,
+    );
+    assert!(
+        !second,
+        "same msg_id + same direction must be deduplicated (WHERE NOT EXISTS blocks it)"
+    );
 
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM messages WHERE msg_id = ?1", rusqlite::params![msg_id], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE msg_id = ?1",
+            rusqlite::params![msg_id],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(count, 1, "exactly one message row must survive dedup");
 }
@@ -1045,16 +1215,36 @@ fn qa_dedup_same_msg_id_different_direction_bug() {
     let msg_id = Uuid::now_v7().to_string();
 
     // Insert direction=in first
-    let in_ok = insert_v2_msg_dedup(&conn, "nostr_in_x", "in", sender, recipient, "inbound", &msg_id);
+    let in_ok = insert_v2_msg_dedup(
+        &conn,
+        "nostr_in_x",
+        "in",
+        sender,
+        recipient,
+        "inbound",
+        &msg_id,
+    );
     assert!(in_ok, "direction=in must be inserted");
 
     // Insert direction=out — same msg_id, different direction (send-to-self scenario).
     // The WHERE NOT EXISTS check in insert_message_v2 does NOT have a direction filter,
     // so it will find the in-row and block the out-insert.
-    let out_ok = insert_v2_msg_dedup(&conn, "nostr_out_x", "out", sender, recipient, "outbound", &msg_id);
+    let out_ok = insert_v2_msg_dedup(
+        &conn,
+        "nostr_out_x",
+        "out",
+        sender,
+        recipient,
+        "outbound",
+        &msg_id,
+    );
 
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM messages WHERE msg_id = ?1", rusqlite::params![msg_id], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE msg_id = ?1",
+            rusqlite::params![msg_id],
+            |row| row.get(0),
+        )
         .unwrap();
 
     // The UNIQUE index (msg_id, direction) would allow both rows.
@@ -1065,14 +1255,15 @@ fn qa_dedup_same_msg_id_different_direction_bug() {
          out-copy (direction=out) is incorrectly deduplicated against in-copy (direction=in) \
          with the same msg_id; send-to-self messages are silently dropped"
     );
-    assert_eq!(count, 1,
+    assert_eq!(
+        count, 1,
         "only one row exists because the out-copy was incorrectly deduplicated (direction-blind WHERE NOT EXISTS)"
     );
 }
 
 // ── Test 11 ──────────────────────────────────────────────────────────────────
 /// Oversized envelope (>8KB raw content) must be rejected.
-/// parse_and_validate checks msg.rumor_content.len() > MAX_MESSAGE_SIZE (8192).
+/// The ingest size gate checks the raw envelope length against MAX_MESSAGE_SIZE (8192).
 #[test]
 fn qa_oversized_envelope_rejected() {
     let sender = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
@@ -1090,7 +1281,7 @@ fn qa_oversized_envelope_rejected() {
         big_json.len()
     );
 
-    // The size check in parse_and_validate: msg.rumor_content.len() > MAX_MESSAGE_SIZE → None
+    // The ingest size gate rejects frames whose raw envelope exceeds MAX_MESSAGE_SIZE.
     let rejected = big_json.len() > MAX_SIZE;
     assert!(rejected, "oversized envelope must be rejected (size gate)");
 
@@ -1106,15 +1297,21 @@ fn qa_oversized_envelope_rejected() {
         let exact_json = format!(
             r#"{{"v":2,"msg_id":"exact-limit","from":"{sender}","to":"{recipient}","ts":"2026-03-25T00:00:00Z","parts":[{{"type":"text","text":"{exact_text}"}}]}}"#
         );
-        assert_eq!(exact_json.len(), MAX_SIZE, "boundary: exact 8192-byte envelope must be exactly {MAX_SIZE} bytes");
-        assert!(exact_json.len() <= MAX_SIZE, "boundary: envelope at exactly MAX_SIZE must pass size gate");
+        assert_eq!(
+            exact_json.len(),
+            MAX_SIZE,
+            "boundary: exact 8192-byte envelope must be exactly {MAX_SIZE} bytes"
+        );
+        assert!(
+            exact_json.len() <= MAX_SIZE,
+            "boundary: envelope at exactly MAX_SIZE must pass size gate"
+        );
     }
 }
 
 // ── Test 12 ──────────────────────────────────────────────────────────────────
 /// AckPart inside a v1 envelope: malformed but must not crash.
-/// parse_and_validate's is_ack check fires before storage, returns Ok(None).
-/// handle_incoming_ack can still process it for the ACK path.
+/// The ingest ACK path should treat it as a control frame, not a regular message.
 #[test]
 fn qa_ackpart_in_v1_envelope_does_not_crash() {
     let conn = open_mem_v4();
@@ -1133,18 +1330,20 @@ fn qa_ackpart_in_v1_envelope_does_not_crash() {
     // Verify it contains an AckPart in parts
     let parts = val["parts"].as_array().unwrap();
     assert_eq!(parts.len(), 1);
-    assert_eq!(parts[0]["type"].as_str().unwrap(), "ack", "must contain an ack part");
+    assert_eq!(
+        parts[0]["type"].as_str().unwrap(),
+        "ack",
+        "must contain an ack part"
+    );
 
-    // The is_ack check in parse_and_validate finds an AckPart → returns Ok(None).
-    // Verify the guard logic: any AckPart in parts[] → is_ack = true → not stored as message.
+    // Any AckPart in parts[] should be treated as a control frame, not stored as a message.
     let is_ack = parts.iter().any(|p| p["type"].as_str() == Some("ack"));
     assert!(is_ack, "v1+AckPart must trigger is_ack guard");
 
     // Simulate ACK handling path: extract original_msg_id and store in acks.
     let original_msg_id = parts[0]["original_msg_id"].as_str().unwrap();
-    let (storm_blocked, inserted) = insert_ack_with_antistorm(
-        &conn, original_msg_id, sender, "2026-03-25T00:00:00Z",
-    );
+    let (storm_blocked, inserted) =
+        insert_ack_with_antistorm(&conn, original_msg_id, sender, "2026-03-25T00:00:00Z");
     assert!(!storm_blocked, "no prior ACK, anti-storm must not fire");
     assert!(inserted, "ACK extracted from v1+AckPart must be stored");
 
@@ -1152,5 +1351,8 @@ fn qa_ackpart_in_v1_envelope_does_not_crash() {
     let msg_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(msg_count, 0, "v1+AckPart must not be stored as a regular message");
+    assert_eq!(
+        msg_count, 0,
+        "v1+AckPart must not be stored as a regular message"
+    );
 }

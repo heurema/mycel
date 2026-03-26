@@ -17,7 +17,9 @@ pub fn run(json: bool) -> Result<()> {
 
     let pid_alive = if lock_path.exists() {
         let content = std::fs::read_to_string(&lock_path).unwrap_or_default();
-        content.trim().parse::<u32>()
+        content
+            .trim()
+            .parse::<u32>()
             .map(is_process_alive)
             .unwrap_or(false)
     } else {

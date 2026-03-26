@@ -135,6 +135,15 @@ fn open_mem() -> Connection {
     conn
 }
 
+fn sqlite_datetime(conn: &Connection, modifier: &str) -> String {
+    conn.query_row(
+        "SELECT datetime('now', ?1)",
+        rusqlite::params![modifier],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
 fn insert_outbox_row(
     conn: &Connection,
     msg_id: &str,
@@ -184,7 +193,7 @@ fn test_outbox_insert_empty_msg_id() {
     // This test probes whether the schema or application defends against it.
     let result = insert_outbox_row(
         &conn,
-        "",                    // ← EMPTY msg_id
+        "", // ← EMPTY msg_id
         "recipient_hex_valid",
         r#"{"msg_id":"","sender":"a","recipient":"b"}"#,
         r#"["wss://relay.test"]"#,
@@ -200,15 +209,15 @@ fn test_outbox_insert_empty_msg_id() {
         Ok(rows) => {
             // Insert succeeded with empty msg_id — verify the row is actually in DB
             let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM outbox WHERE msg_id = ''",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT COUNT(*) FROM outbox WHERE msg_id = ''", [], |row| {
+                    row.get(0)
+                })
                 .unwrap();
-            assert_eq!(count, rows as i64,
+            assert_eq!(
+                count, rows as i64,
                 "BUG: empty msg_id was accepted by the schema (no CHECK constraint). \
-                 An empty-string PK is semantically invalid — add CHECK(msg_id != '') to schema.");
+                 An empty-string PK is semantically invalid — add CHECK(msg_id != '') to schema."
+            );
         }
         Err(_) => {
             // Schema correctly rejects empty msg_id — expected behaviour
@@ -232,7 +241,7 @@ fn test_outbox_insert_empty_envelope_json() {
         &conn,
         &msg_id,
         "abc123def456",
-        "",                    // ← EMPTY envelope_json
+        "", // ← EMPTY envelope_json
         r#"["wss://relay.test"]"#,
         "pending",
         0,
@@ -241,7 +250,10 @@ fn test_outbox_insert_empty_envelope_json() {
     );
 
     // Schema has no CHECK on envelope_json != '', so this silently succeeds.
-    assert!(result.is_ok(), "insert with empty envelope_json should succeed at DB level");
+    assert!(
+        result.is_ok(),
+        "insert with empty envelope_json should succeed at DB level"
+    );
 
     // Now simulate what flush_outbox does: try to deserialize the envelope
     let stored_envelope: String = conn
@@ -270,10 +282,12 @@ fn test_outbox_insert_empty_envelope_json() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(status, "pending",
+    assert_eq!(
+        status, "pending",
         "NOTE: row with empty envelope_json stays 'pending' forever — \
          flush_outbox only logs a warning and skips, never marks as failed_permanent. \
-         This is a latent bug: poison-pill rows accumulate.");
+         This is a latent bug: poison-pill rows accumulate."
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -294,10 +308,11 @@ fn test_outbox_retry_count_exceeds_max_retries() {
         r#"{"msg_id":"abc","sender":"a","recipient":"b","parts":[]}"#,
         r#"["wss://relay.test"]"#,
         "pending",
-        MAX_RETRIES - 1,  // 9 — one more retry tips it over
+        MAX_RETRIES - 1, // 9 — one more retry tips it over
         "2026-03-25T00:00:00Z",
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Simulate what flush_outbox does on failure: new_retry_count = retry_count + 1
     let new_retry_count = MAX_RETRIES; // = 10, equals MAX_RETRIES
@@ -308,7 +323,8 @@ fn test_outbox_retry_count_exceeds_max_retries() {
         conn.execute(
             "UPDATE outbox SET status = 'failed_permanent', last_attempt_at = ?1 WHERE msg_id = ?2",
             rusqlite::params![now, msg_id],
-        ).unwrap();
+        )
+        .unwrap();
     } else {
         let next_retry_at = "2026-03-25T02:00:00Z";
         conn.execute(
@@ -325,8 +341,11 @@ fn test_outbox_retry_count_exceeds_max_retries() {
         )
         .unwrap();
 
-    assert_eq!(status, "failed_permanent",
-        "after retry_count reaches MAX_RETRIES ({}), status must be 'failed_permanent'", MAX_RETRIES);
+    assert_eq!(
+        status, "failed_permanent",
+        "after retry_count reaches MAX_RETRIES ({}), status must be 'failed_permanent'",
+        MAX_RETRIES
+    );
 
     // Also test with retry_count already AT max when first inserted
     let msg_id2 = Uuid::now_v7().to_string();
@@ -337,17 +356,19 @@ fn test_outbox_retry_count_exceeds_max_retries() {
         r#"{"msg_id":"xyz","sender":"a","recipient":"b","parts":[]}"#,
         r#"["wss://relay.test"]"#,
         "pending",
-        MAX_RETRIES,   // already at max — next flush must immediately fail_permanent
+        MAX_RETRIES, // already at max — next flush must immediately fail_permanent
         "2026-03-25T00:00:00Z",
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     let new_retry_count2 = MAX_RETRIES + 1;
     if new_retry_count2 > MAX_RETRIES {
         conn.execute(
             "UPDATE outbox SET status = 'failed_permanent', last_attempt_at = ?1 WHERE msg_id = ?2",
             rusqlite::params![now, msg_id2],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     let status2: String = conn
@@ -368,7 +389,10 @@ fn test_outbox_retry_count_exceeds_max_retries() {
     // But: what if row.retry_count = 0 and 1 >= 10? No — goes to retry ✓
     // The boundary is correct but a row inserted with retry_count=10 would survive
     // one extra fetch from get_pending_outbox before being killed.
-    assert!(new_retry_count >= MAX_RETRIES, "boundary check: >= MAX_RETRIES is correct");
+    assert!(
+        new_retry_count >= MAX_RETRIES,
+        "boundary check: >= MAX_RETRIES is correct"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -381,20 +405,20 @@ fn test_outbox_retry_count_exceeds_max_retries() {
 fn test_backoff_formula_correctness() {
     // Expected values for n = 0..15
     let cases: &[(u32, u64)] = &[
-        (0,  30),       // 30 * 2^0  = 30
-        (1,  60),       // 30 * 2^1  = 60
-        (2,  120),      // 30 * 2^2  = 120
-        (3,  240),      // 30 * 2^3  = 240
-        (4,  480),      // 30 * 2^4  = 480
-        (5,  960),      // 30 * 2^5  = 960
-        (6,  1920),     // 30 * 2^6  = 1920
-        (7,  3600),     // 30 * 2^7  = 3840 → capped at 3600
-        (8,  3600),     // 30 * 2^8  = 7680 → capped at 3600
-        (9,  3600),     // ...capped
+        (0, 30),   // 30 * 2^0  = 30
+        (1, 60),   // 30 * 2^1  = 60
+        (2, 120),  // 30 * 2^2  = 120
+        (3, 240),  // 30 * 2^3  = 240
+        (4, 480),  // 30 * 2^4  = 480
+        (5, 960),  // 30 * 2^5  = 960
+        (6, 1920), // 30 * 2^6  = 1920
+        (7, 3600), // 30 * 2^7  = 3840 → capped at 3600
+        (8, 3600), // 30 * 2^8  = 7680 → capped at 3600
+        (9, 3600), // ...capped
         (10, 3600),
         (15, 3600),
-        (31, 3600),     // extreme: 30 * 2^31 overflows u32 → saturating_mul saves it
-        (32, 3600),     // retry_count.min(31) clamps the shift → 30 * 2^31
+        (31, 3600), // extreme: 30 * 2^31 overflows u32 → saturating_mul saves it
+        (32, 3600), // retry_count.min(31) clamps the shift → 30 * 2^31
     ];
 
     for &(n, expected_secs) in cases {
@@ -409,15 +433,26 @@ fn test_backoff_formula_correctness() {
     for n in 0u32..=40 {
         let secs = expected_backoff_secs(n);
         assert!(secs <= 3600, "backoff for n={n} exceeds 3600: got {secs}");
-        assert!(secs >= 30, "backoff for n={n} below minimum 30s: got {secs}");
+        assert!(
+            secs >= 30,
+            "backoff for n={n} below minimum 30s: got {secs}"
+        );
     }
 
     // Cross-check: the formula in store/mod.rs uses:
     //   (30u64.saturating_mul(1u64 << retry_count.min(31))).min(3600)
     // n=7: 30 * 128 = 3840 > 3600 → should cap. Our expected_backoff_secs(7) = 3600.
     // n=6: 30 * 64 = 1920 < 3600 → should NOT cap.
-    assert_eq!(expected_backoff_secs(6), 1920, "n=6 must not be capped at 3600");
-    assert_eq!(expected_backoff_secs(7), 3600, "n=7 must be capped at 3600 (3840 > 3600)");
+    assert_eq!(
+        expected_backoff_secs(6),
+        1920,
+        "n=6 must not be capped at 3600"
+    );
+    assert_eq!(
+        expected_backoff_secs(7),
+        3600,
+        "n=7 must be capped at 3600 (3840 > 3600)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -464,8 +499,10 @@ fn test_compute_next_retry_at_is_future() {
 #[test]
 fn test_outbox_cleanup_sent_older_than_7_days() {
     let conn = open_mem();
+    let sent_old = sqlite_datetime(&conn, "-8 days");
+    let sent_recent = sqlite_datetime(&conn, "-1 days");
 
-    // Row 1: sent, created >7 days ago → should be deleted
+    // Row 1: sent_at >7 days ago → should be deleted
     let old_msg_id = Uuid::now_v7().to_string();
     insert_outbox_row(
         &conn,
@@ -475,11 +512,17 @@ fn test_outbox_cleanup_sent_older_than_7_days() {
         r#"["wss://relay.test"]"#,
         "sent",
         0,
-        "2020-01-01T00:00:00Z",   // ← far in the past
+        "2020-01-01T00:00:00Z", // created long ago
         None,
-    ).unwrap();
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE outbox SET sent_at = ?1, last_attempt_at = ?1 WHERE msg_id = ?2",
+        rusqlite::params![sent_old, old_msg_id],
+    )
+    .unwrap();
 
-    // Row 2: sent, created <7 days ago → should be KEPT
+    // Row 2: created long ago, but sent recently → should be KEPT
     let recent_msg_id = Uuid::now_v7().to_string();
     insert_outbox_row(
         &conn,
@@ -489,9 +532,15 @@ fn test_outbox_cleanup_sent_older_than_7_days() {
         r#"["wss://relay.test"]"#,
         "sent",
         0,
-        "2026-03-25T00:00:00Z",   // ← today (within 7 days)
+        "2020-01-01T00:00:00Z",
         None,
-    ).unwrap();
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE outbox SET sent_at = ?1, last_attempt_at = ?1 WHERE msg_id = ?2",
+        rusqlite::params![sent_recent, recent_msg_id],
+    )
+    .unwrap();
 
     // Row 3: pending (not sent) → should NOT be touched by sent-cleanup
     let pending_msg_id = Uuid::now_v7().to_string();
@@ -503,15 +552,20 @@ fn test_outbox_cleanup_sent_older_than_7_days() {
         r#"["wss://relay.test"]"#,
         "pending",
         0,
-        "2020-01-01T00:00:00Z",   // ← old but not sent
+        "2020-01-01T00:00:00Z", // ← old but not sent
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Run the cleanup SQL (exact copy from flush_outbox)
-    let deleted = conn.execute(
-        "DELETE FROM outbox WHERE status = 'sent' AND created_at < datetime('now', '-7 days')",
-        [],
-    ).unwrap();
+    let deleted = conn
+        .execute(
+            "DELETE FROM outbox
+         WHERE status = 'sent'
+           AND COALESCE(sent_at, created_at) < datetime('now', '-7 days')",
+            [],
+        )
+        .unwrap();
 
     assert_eq!(deleted, 1, "exactly one sent-old row should be deleted");
 
@@ -543,7 +597,10 @@ fn test_outbox_cleanup_sent_older_than_7_days() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(pending_count, 1, "old pending row must NOT be deleted by sent-cleanup");
+    assert_eq!(
+        pending_count, 1,
+        "old pending row must NOT be deleted by sent-cleanup"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -553,8 +610,10 @@ fn test_outbox_cleanup_sent_older_than_7_days() {
 #[test]
 fn test_outbox_cleanup_failed_permanent_retention() {
     let conn = open_mem();
+    let failed_old = sqlite_datetime(&conn, "-31 days");
+    let failed_recent = sqlite_datetime(&conn, "-5 days");
 
-    // Row 1: failed_permanent, created >30 days ago → delete
+    // Row 1: failed_permanent, last_attempt_at >30 days ago → delete
     let old_failed_id = Uuid::now_v7().to_string();
     insert_outbox_row(
         &conn,
@@ -564,11 +623,17 @@ fn test_outbox_cleanup_failed_permanent_retention() {
         r#"["wss://relay.test"]"#,
         "failed_permanent",
         MAX_RETRIES,
-        "2020-01-01T00:00:00Z",   // ← 6 years ago
+        "2020-01-01T00:00:00Z", // ← 6 years ago
         None,
-    ).unwrap();
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE outbox SET last_attempt_at = ?1 WHERE msg_id = ?2",
+        rusqlite::params![failed_old, old_failed_id],
+    )
+    .unwrap();
 
-    // Row 2: failed_permanent, created <30 days ago → keep
+    // Row 2: created long ago, but failed recently → keep
     let recent_failed_id = Uuid::now_v7().to_string();
     insert_outbox_row(
         &conn,
@@ -578,9 +643,15 @@ fn test_outbox_cleanup_failed_permanent_retention() {
         r#"["wss://relay.test"]"#,
         "failed_permanent",
         MAX_RETRIES,
-        "2026-03-25T00:00:00Z",   // ← today
+        "2020-01-01T00:00:00Z",
         None,
-    ).unwrap();
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE outbox SET last_attempt_at = ?1 WHERE msg_id = ?2",
+        rusqlite::params![failed_recent, recent_failed_id],
+    )
+    .unwrap();
 
     // Row 3: sent, >30 days old — should NOT be touched by failed_permanent cleanup
     let old_sent_id = Uuid::now_v7().to_string();
@@ -594,33 +665,62 @@ fn test_outbox_cleanup_failed_permanent_retention() {
         0,
         "2020-01-01T00:00:00Z",
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Run failed_permanent cleanup (exact copy from flush_outbox)
-    let deleted = conn.execute(
-        "DELETE FROM outbox WHERE status = 'failed_permanent' AND created_at < datetime('now', '-30 days')",
-        [],
-    ).unwrap();
+    let deleted = conn
+        .execute(
+            "DELETE FROM outbox
+         WHERE status = 'failed_permanent'
+           AND COALESCE(last_attempt_at, created_at) < datetime('now', '-30 days')",
+            [],
+        )
+        .unwrap();
 
-    assert_eq!(deleted, 1, "exactly one failed_permanent-old row should be deleted");
+    assert_eq!(
+        deleted, 1,
+        "exactly one failed_permanent-old row should be deleted"
+    );
 
     // old_failed_id must be gone
     let old_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM outbox WHERE msg_id = ?1", rusqlite::params![old_failed_id], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM outbox WHERE msg_id = ?1",
+            rusqlite::params![old_failed_id],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert_eq!(old_count, 0, "old failed_permanent row must be deleted after 30d");
+    assert_eq!(
+        old_count, 0,
+        "old failed_permanent row must be deleted after 30d"
+    );
 
     // recent_failed_id must remain
     let recent_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM outbox WHERE msg_id = ?1", rusqlite::params![recent_failed_id], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM outbox WHERE msg_id = ?1",
+            rusqlite::params![recent_failed_id],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert_eq!(recent_count, 1, "recent failed_permanent row must be kept within 30d");
+    assert_eq!(
+        recent_count, 1,
+        "recent failed_permanent row must be kept within 30d"
+    );
 
     // sent row untouched by failed_permanent cleanup
     let sent_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM outbox WHERE msg_id = ?1", rusqlite::params![old_sent_id], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM outbox WHERE msg_id = ?1",
+            rusqlite::params![old_sent_id],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert_eq!(sent_count, 1, "sent row must not be deleted by failed_permanent cleanup");
+    assert_eq!(
+        sent_count, 1,
+        "sent row must not be deleted by failed_permanent cleanup"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -644,7 +744,8 @@ fn test_outbox_concurrent_flush_no_race() {
     // Init schema
     {
         let conn = Connection::open(&db_path).unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+            .unwrap();
         conn.execute_batch(FULL_SCHEMA).unwrap();
     }
 
@@ -663,7 +764,8 @@ fn test_outbox_concurrent_flush_no_race() {
             0,
             "2026-03-25T00:00:00Z",
             None,
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     let db_path = Arc::new(db_path);
@@ -714,9 +816,14 @@ fn test_outbox_concurrent_flush_no_race() {
         )
         .unwrap();
 
-    assert_eq!(count, 1, "concurrent flush must not create duplicate outbox rows");
-    assert_eq!(status, "sent",
-        "after concurrent flush, status must be 'sent' (last-writer wins, both set 'sent')");
+    assert_eq!(
+        count, 1,
+        "concurrent flush must not create duplicate outbox rows"
+    );
+    assert_eq!(
+        status, "sent",
+        "after concurrent flush, status must be 'sent' (last-writer wins, both set 'sent')"
+    );
 
     // NOTE: the real race condition in flush_outbox is more subtle:
     // Both flushes fetch 'pending' rows before either updates. They both attempt
@@ -741,12 +848,13 @@ fn test_outbox_invalid_relay_urls_json_fallback() {
         &msg_id,
         "recipient_hex",
         r#"{"msg_id":"relay_test","sender":"a","recipient":"b","parts":[]}"#,
-        r#"not valid json at all [{"#,  // ← malformed JSON
+        r#"not valid json at all [{"#, // ← malformed JSON
         "pending",
         0,
         "2026-03-25T00:00:00Z",
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Retrieve and attempt to parse relay_urls (as flush_outbox does)
     let stored_relay_urls: String = conn
@@ -761,8 +869,8 @@ fn test_outbox_invalid_relay_urls_json_fallback() {
 
     // This is exactly what flush_outbox does (store/mod.rs line 983):
     //   serde_json::from_str(&row.relay_urls).unwrap_or_else(|_| relay_urls.clone())
-    let parsed: Vec<String> = serde_json::from_str(&stored_relay_urls)
-        .unwrap_or_else(|_| fallback_relays.clone());
+    let parsed: Vec<String> =
+        serde_json::from_str(&stored_relay_urls).unwrap_or_else(|_| fallback_relays.clone());
 
     assert_eq!(
         parsed, fallback_relays,
@@ -821,7 +929,11 @@ fn test_schema_migration_v2_to_v3_idempotent() {
     ";
 
     let result1 = conn.execute_batch(migration_v3);
-    assert!(result1.is_ok(), "first v2→v3 migration must succeed: {:?}", result1.err());
+    assert!(
+        result1.is_ok(),
+        "first v2→v3 migration must succeed: {:?}",
+        result1.err()
+    );
 
     // Insert a row to verify the table is functional
     let msg_id = Uuid::now_v7().to_string();
@@ -835,20 +947,34 @@ fn test_schema_migration_v2_to_v3_idempotent() {
         0,
         "2026-03-25T00:00:00Z",
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Second migration run: must be idempotent (IF NOT EXISTS)
     let result2 = conn.execute_batch(migration_v3);
-    assert!(result2.is_ok(), "second v2→v3 migration run must be idempotent: {:?}", result2.err());
+    assert!(
+        result2.is_ok(),
+        "second v2→v3 migration run must be idempotent: {:?}",
+        result2.err()
+    );
 
     // Data must still be intact
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM outbox WHERE msg_id = ?1", rusqlite::params![msg_id], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM outbox WHERE msg_id = ?1",
+            rusqlite::params![msg_id],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert_eq!(count, 1, "outbox row must survive idempotent migration re-run");
+    assert_eq!(
+        count, 1,
+        "outbox row must survive idempotent migration re-run"
+    );
 
     // user_version must be 3
-    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(version, 3, "user_version must be 3 after migration");
 }
 
@@ -873,17 +999,31 @@ fn test_outbox_flush_with_zero_pending_is_noop() {
     assert_eq!(pending_count, 0, "empty outbox must have zero pending rows");
 
     // Simulate what flush_outbox does: run cleanup then check pending
-    let sent_deleted = conn.execute(
-        "DELETE FROM outbox WHERE status = 'sent' AND created_at < datetime('now', '-7 days')",
-        [],
-    ).unwrap();
-    let failed_deleted = conn.execute(
-        "DELETE FROM outbox WHERE status = 'failed_permanent' AND created_at < datetime('now', '-30 days')",
-        [],
-    ).unwrap();
+    let sent_deleted = conn
+        .execute(
+            "DELETE FROM outbox
+         WHERE status = 'sent'
+           AND COALESCE(sent_at, created_at) < datetime('now', '-7 days')",
+            [],
+        )
+        .unwrap();
+    let failed_deleted = conn
+        .execute(
+            "DELETE FROM outbox
+         WHERE status = 'failed_permanent'
+           AND COALESCE(last_attempt_at, created_at) < datetime('now', '-30 days')",
+            [],
+        )
+        .unwrap();
 
-    assert_eq!(sent_deleted, 0, "cleanup of empty outbox must delete 0 rows");
-    assert_eq!(failed_deleted, 0, "cleanup of empty outbox must delete 0 rows");
+    assert_eq!(
+        sent_deleted, 0,
+        "cleanup of empty outbox must delete 0 rows"
+    );
+    assert_eq!(
+        failed_deleted, 0,
+        "cleanup of empty outbox must delete 0 rows"
+    );
 
     // The pending query returns empty vec — flush_outbox returns Ok(()) immediately
     let mut stmt = conn.prepare(
@@ -895,7 +1035,10 @@ fn test_outbox_flush_with_zero_pending_is_noop() {
         .filter_map(|r| r.ok())
         .collect();
 
-    assert!(rows.is_empty(), "pending rows on empty outbox must be empty vec");
+    assert!(
+        rows.is_empty(),
+        "pending rows on empty outbox must be empty vec"
+    );
 
     // No crash, no panic — confirmed by reaching this line.
 }
@@ -912,30 +1055,62 @@ fn test_outbox_pending_only_returns_due_rows() {
     // Row A: pending, no next_retry_at (immediately due)
     let msg_a = Uuid::now_v7().to_string();
     insert_outbox_row(
-        &conn, &msg_a, "r", r#"{"msg_id":"a"}"#, r#"[]"#, "pending", 0,
-        "2026-03-25T00:00:00Z", None,
-    ).unwrap();
+        &conn,
+        &msg_a,
+        "r",
+        r#"{"msg_id":"a"}"#,
+        r#"[]"#,
+        "pending",
+        0,
+        "2026-03-25T00:00:00Z",
+        None,
+    )
+    .unwrap();
 
     // Row B: pending, next_retry_at in the far future (not due yet)
     let msg_b = Uuid::now_v7().to_string();
     insert_outbox_row(
-        &conn, &msg_b, "r", r#"{"msg_id":"b"}"#, r#"[]"#, "pending", 1,
-        "2026-03-25T00:00:00Z", Some("2099-01-01T00:00:00Z"),
-    ).unwrap();
+        &conn,
+        &msg_b,
+        "r",
+        r#"{"msg_id":"b"}"#,
+        r#"[]"#,
+        "pending",
+        1,
+        "2026-03-25T00:00:00Z",
+        Some("2099-01-01T00:00:00Z"),
+    )
+    .unwrap();
 
     // Row C: sent (should never appear in pending query)
     let msg_c = Uuid::now_v7().to_string();
     insert_outbox_row(
-        &conn, &msg_c, "r", r#"{"msg_id":"c"}"#, r#"[]"#, "sent", 0,
-        "2026-03-25T00:00:00Z", None,
-    ).unwrap();
+        &conn,
+        &msg_c,
+        "r",
+        r#"{"msg_id":"c"}"#,
+        r#"[]"#,
+        "sent",
+        0,
+        "2026-03-25T00:00:00Z",
+        None,
+    )
+    .unwrap();
 
     // Row D: failed_permanent (should never appear in pending query)
     let msg_d = Uuid::now_v7().to_string();
     insert_outbox_row(
-        &conn, &msg_d, "r", r#"{"msg_id":"d"}"#, r#"[]"#, "failed_permanent", MAX_RETRIES,
-        "2026-03-25T00:00:00Z", None,
-    ).unwrap();
+        &conn,
+        &msg_d,
+        "r",
+        r#"{"msg_id":"d"}"#,
+        r#"[]"#,
+        "failed_permanent",
+        MAX_RETRIES,
+        "2026-03-25T00:00:00Z",
+        None,
+    )
+    .unwrap();
 
     // Run the exact query from flush_outbox
     let mut stmt = conn.prepare(
@@ -948,10 +1123,22 @@ fn test_outbox_pending_only_returns_due_rows() {
         .collect();
 
     assert_eq!(due_ids.len(), 1, "only one row must be due for retry");
-    assert!(due_ids.contains(&msg_a), "row A (no next_retry_at) must be due");
-    assert!(!due_ids.contains(&msg_b), "row B (future next_retry_at) must NOT be due");
-    assert!(!due_ids.contains(&msg_c), "row C (sent) must NOT appear in pending query");
-    assert!(!due_ids.contains(&msg_d), "row D (failed_permanent) must NOT appear in pending query");
+    assert!(
+        due_ids.contains(&msg_a),
+        "row A (no next_retry_at) must be due"
+    );
+    assert!(
+        !due_ids.contains(&msg_b),
+        "row B (future next_retry_at) must NOT be due"
+    );
+    assert!(
+        !due_ids.contains(&msg_c),
+        "row C (sent) must NOT appear in pending query"
+    );
+    assert!(
+        !due_ids.contains(&msg_d),
+        "row D (failed_permanent) must NOT appear in pending query"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -963,7 +1150,8 @@ fn test_outbox_pending_only_returns_due_rows() {
 fn test_outbox_retry_update_preserves_other_fields() {
     let conn = open_mem();
     let msg_id = Uuid::now_v7().to_string();
-    let original_envelope = r#"{"msg_id":"preserve_test","sender":"alice","recipient":"bob","parts":[]}"#;
+    let original_envelope =
+        r#"{"msg_id":"preserve_test","sender":"alice","recipient":"bob","parts":[]}"#;
     let original_recipient = "original_recipient_hex";
     let original_relay_urls = r#"["wss://original.relay"]"#;
 
@@ -977,7 +1165,8 @@ fn test_outbox_retry_update_preserves_other_fields() {
         0,
         "2026-03-25T00:00:00Z",
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Simulate a retry update (exact SQL from update_outbox_retry)
     let new_retry_count = 1u32;
@@ -997,10 +1186,22 @@ fn test_outbox_retry_update_preserves_other_fields() {
         )
         .unwrap();
 
-    assert_eq!(envelope, original_envelope, "envelope_json must not be modified by retry update");
-    assert_eq!(recipient, original_recipient, "recipient_hex must not be modified by retry update");
-    assert_eq!(relay_urls, original_relay_urls, "relay_urls must not be modified by retry update");
-    assert_eq!(status, "pending", "status must remain 'pending' after retry update");
+    assert_eq!(
+        envelope, original_envelope,
+        "envelope_json must not be modified by retry update"
+    );
+    assert_eq!(
+        recipient, original_recipient,
+        "recipient_hex must not be modified by retry update"
+    );
+    assert_eq!(
+        relay_urls, original_relay_urls,
+        "relay_urls must not be modified by retry update"
+    );
+    assert_eq!(
+        status, "pending",
+        "status must remain 'pending' after retry update"
+    );
     assert_eq!(retry_count, 1, "retry_count must be incremented to 1");
 }
 
@@ -1016,16 +1217,35 @@ fn test_outbox_insert_duplicate_msg_id_ignored() {
     let msg_id = Uuid::now_v7().to_string();
 
     let first = insert_outbox_row(
-        &conn, &msg_id, "recipient", r#"{"msg_id":"dup"}"#, r#"[]"#,
-        "pending", 0, "2026-03-25T00:00:00Z", None,
-    ).unwrap();
+        &conn,
+        &msg_id,
+        "recipient",
+        r#"{"msg_id":"dup"}"#,
+        r#"[]"#,
+        "pending",
+        0,
+        "2026-03-25T00:00:00Z",
+        None,
+    )
+    .unwrap();
     assert_eq!(first, 1, "first insert must affect 1 row");
 
     let second = insert_outbox_row(
-        &conn, &msg_id, "different_recipient", r#"{"msg_id":"dup2"}"#, r#"[]"#,
-        "pending", 5, "2026-03-25T01:00:00Z", None,
-    ).unwrap();
-    assert_eq!(second, 0, "duplicate insert must be silently ignored (INSERT OR IGNORE)");
+        &conn,
+        &msg_id,
+        "different_recipient",
+        r#"{"msg_id":"dup2"}"#,
+        r#"[]"#,
+        "pending",
+        5,
+        "2026-03-25T01:00:00Z",
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        second, 0,
+        "duplicate insert must be silently ignored (INSERT OR IGNORE)"
+    );
 
     // Verify: original row is unchanged
     let (recipient, retry_count): (String, u32) = conn
@@ -1036,6 +1256,9 @@ fn test_outbox_insert_duplicate_msg_id_ignored() {
         )
         .unwrap();
 
-    assert_eq!(recipient, "recipient", "original recipient must be preserved");
+    assert_eq!(
+        recipient, "recipient",
+        "original recipient must be preserved"
+    );
     assert_eq!(retry_count, 0, "original retry_count must be preserved");
 }

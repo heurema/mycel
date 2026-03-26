@@ -60,15 +60,18 @@ async fn check_database(data_dir: &std::path::Path) -> u32 {
         let db_path_owned = db_path.to_path_buf();
         match store::Db::open(&db_path_owned) {
             Ok(db) => {
-                match db.run(|conn| {
-                    let count: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
-                        .unwrap_or(0);
-                    let contacts: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM contacts", [], |row| row.get(0))
-                        .unwrap_or(0);
-                    Ok((count, contacts))
-                }).await {
+                match db
+                    .run(|conn| {
+                        let count: i64 = conn
+                            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+                            .unwrap_or(0);
+                        let contacts: i64 = conn
+                            .query_row("SELECT COUNT(*) FROM contacts", [], |row| row.get(0))
+                            .unwrap_or(0);
+                        Ok((count, contacts))
+                    })
+                    .await
+                {
                     Ok((count, contacts)) => {
                         println!("OK ({count} messages, {contacts} contacts)");
                         0
@@ -94,7 +97,11 @@ fn check_config(cfg_dir: &std::path::Path, cfg: &config::Config) -> u32 {
     let config_path = cfg_dir.join("config.toml");
     print!("Config:   ");
     if config_path.exists() {
-        println!("OK ({} relays configured, storage: {})", cfg.relays.urls.len(), cfg.identity.storage);
+        println!(
+            "OK ({} relays configured, storage: {})",
+            cfg.relays.urls.len(),
+            cfg.identity.storage
+        );
     } else {
         println!("NOT FOUND (using defaults)");
     }

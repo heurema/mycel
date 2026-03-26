@@ -75,7 +75,7 @@ pub struct TransportConfig {
     pub kind: TransportKind,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub relays: RelayConfig,
     pub identity: IdentityConfig,
@@ -90,7 +90,7 @@ pub struct Config {
     pub transport: TransportConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayConfig {
     pub urls: Vec<String>,
     #[serde(default = "default_timeout_secs")]
@@ -108,7 +108,7 @@ pub enum IdentityStorage {
     File,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityConfig {
     pub storage: IdentityStorage,
 }
@@ -204,16 +204,41 @@ mod tests {
         assert!(config_path.exists(), "config.toml should be created");
 
         // Must round-trip
-        let loaded: Config = toml::from_str(&std::fs::read_to_string(&config_path).unwrap())
-            .expect("toml parse");
+        let loaded: Config =
+            toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).expect("toml parse");
 
         // Relay URLs must contain all seven defaults
         assert!(loaded.relays.urls.contains(&"wss://nos.lol".to_string()));
-        assert!(loaded.relays.urls.contains(&"wss://relay.damus.io".to_string()));
-        assert!(loaded.relays.urls.contains(&"wss://relay.nostr.band".to_string()));
-        assert!(loaded.relays.urls.contains(&"wss://relay.primal.net".to_string()));
-        assert!(loaded.relays.urls.contains(&"wss://relay.snort.social".to_string()));
-        assert!(loaded.relays.urls.contains(&"wss://nostr.mutinywallet.com".to_string()));
+        assert!(
+            loaded
+                .relays
+                .urls
+                .contains(&"wss://relay.damus.io".to_string())
+        );
+        assert!(
+            loaded
+                .relays
+                .urls
+                .contains(&"wss://relay.nostr.band".to_string())
+        );
+        assert!(
+            loaded
+                .relays
+                .urls
+                .contains(&"wss://relay.primal.net".to_string())
+        );
+        assert!(
+            loaded
+                .relays
+                .urls
+                .contains(&"wss://relay.snort.social".to_string())
+        );
+        assert!(
+            loaded
+                .relays
+                .urls
+                .contains(&"wss://nostr.mutinywallet.com".to_string())
+        );
         assert!(loaded.relays.urls.contains(&"wss://nostr.wine".to_string()));
 
         // Identity storage default

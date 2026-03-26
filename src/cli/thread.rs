@@ -5,6 +5,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::config;
+use crate::core::router;
 use crate::crypto;
 use crate::envelope;
 use crate::error::MycelError;
@@ -47,9 +48,11 @@ pub enum ThreadCommand {
 pub async fn run(cmd: ThreadCommand) -> Result<()> {
     match cmd {
         ThreadCommand::Create { topic, members } => create_thread(&topic, &members).await,
-        ThreadCommand::Send { thread_id, message, reply_to } => {
-            send_thread_message(&thread_id, &message, reply_to.as_deref()).await
-        }
+        ThreadCommand::Send {
+            thread_id,
+            message,
+            reply_to,
+        } => send_thread_message(&thread_id, &message, reply_to.as_deref()).await,
         ThreadCommand::Log { thread_id, json } => log_thread(&thread_id, json).await,
     }
 }
@@ -136,7 +139,11 @@ pub async fn create_thread(topic: &str, members: &[String]) -> Result<()> {
 /// Sends a message to all thread members via NIP-17 multi_recipient_gift_wrap.
 /// Inserts message into DB with transport='nostr', transport_msg_id = first event_id.
 /// Prints msg_id to stdout.
-pub async fn send_thread_message(thread_id: &str, message: &str, reply_to: Option<&str>) -> Result<()> {
+pub async fn send_thread_message(
+    thread_id: &str,
+    message: &str,
+    reply_to: Option<&str>,
+) -> Result<()> {
     if message.trim().is_empty() {
         return Err(MycelError::EmptyMessage.into());
     }
@@ -159,6 +166,11 @@ pub async fn send_thread_message(thread_id: &str, message: &str, reply_to: Optio
 
     let members: Vec<ThreadMember> = serde_json::from_str(&thread.members).unwrap_or_default();
     let member_pubkeys: Vec<String> = members.iter().map(|m| m.pubkey.clone()).collect();
+    let member_routes = router::resolve_thread_member_routes(&member_pubkeys)?;
+    let member_pubkeys: Vec<String> = member_routes
+        .iter()
+        .map(|route| route.pubkey_hex.clone())
+        .collect();
 
     // Generate UUIDv7 msg_id for this message
     let msg_id = Uuid::now_v7().to_string();
@@ -180,7 +192,11 @@ pub async fn send_thread_message(thread_id: &str, message: &str, reply_to: Optio
             Ok(msgs.len())
         })
         .await?;
-    let subject = if has_messages == 0 { thread.subject.as_deref() } else { None };
+    let subject = if has_messages == 0 {
+        thread.subject.as_deref()
+    } else {
+        None
+    };
 
     let relay_urls = cfg.relays.urls.clone();
     let timeout = Duration::from_secs(cfg.relays.timeout_secs);
@@ -190,7 +206,9 @@ pub async fn send_thread_message(thread_id: &str, message: &str, reply_to: Optio
         msg_id.clone(),
         sender_hex.clone(),
         thread_id.to_string(),
-        vec![Part::TextPart { text: message.to_string() }],
+        vec![Part::TextPart {
+            text: message.to_string(),
+        }],
     );
     let env_json = serde_json::to_string(&env)?;
 
@@ -240,6 +258,7 @@ pub async fn send_thread_message(thread_id: &str, message: &str, reply_to: Optio
         reply_to: reply_to.map(|s| s.to_string()),
         transport: Some("nostr".to_string()),
         transport_msg_id: Some(transport_msg_id.clone()),
+        source_frame_id: None,
     };
 
     db.run(move |conn| store::insert_message_v2(conn, &msg_row, &meta).map(|_| ()))
@@ -275,7 +294,11 @@ pub async fn log_thread(thread_id: &str, json: bool) -> Result<()> {
         if json {
             // empty JSONL — just print nothing
         } else {
-            println!("Thread: {} ({})", thread.subject.as_deref().unwrap_or("(no subject)"), thread_id);
+            println!(
+                "Thread: {} ({})",
+                thread.subject.as_deref().unwrap_or("(no subject)"),
+                thread_id
+            );
             println!("No messages.");
         }
         return Ok(());
@@ -305,9 +328,7 @@ pub async fn log_thread(thread_id: &str, json: bool) -> Result<()> {
             let msg_id_display = meta.msg_id.as_deref().unwrap_or("?");
             println!(
                 "[{}] {} | msg_id: {}",
-                msg.created_at,
-                msg.sender,
-                msg_id_display
+                msg.created_at, msg.sender, msg_id_display
             );
             println!("  {}", msg.content);
             if let Some(reply_to) = &meta.reply_to {
@@ -343,13 +364,16 @@ fn resolve_member_pubkey(member: &str) -> Result<String> {
     if let Ok(pk) = PublicKey::from_bech32(member) {
         return Ok(pk.to_hex());
     }
-    Err(anyhow::anyhow!("invalid member pubkey: '{}' — expected hex or npub bech32", member))
+    Err(anyhow::anyhow!(
+        "invalid member pubkey: '{}' — expected hex or npub bech32",
+        member
+    ))
 }
 
 /// Compute SHA-256 hex of bytes (for thread_id generation from topic string).
 fn sha256_hex(input: &[u8]) -> String {
-    use nostr_sdk::nostr::hashes::sha256::Hash as Sha256Hash;
     use nostr_sdk::nostr::hashes::Hash;
+    use nostr_sdk::nostr::hashes::sha256::Hash as Sha256Hash;
     let hash = Sha256Hash::hash(input);
     format!("{hash:x}")
 }

@@ -1,10 +1,10 @@
-use nostr_sdk::nostr::hashes::sha256::Hash as Sha256Hash;
-use nostr_sdk::nostr::hashes::Hash;
-use nostr_sdk::nostr::secp256k1::schnorr::Signature;
-use nostr_sdk::nostr::secp256k1::{Message, XOnlyPublicKey, SECP256K1};
 use nostr_sdk::Keys;
-use nostr_sdk::SecretKey;
 use nostr_sdk::PublicKey as NostrPublicKey;
+use nostr_sdk::SecretKey;
+use nostr_sdk::nostr::hashes::Hash;
+use nostr_sdk::nostr::hashes::sha256::Hash as Sha256Hash;
+use nostr_sdk::nostr::secp256k1::schnorr::Signature;
+use nostr_sdk::nostr::secp256k1::{Message, SECP256K1, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::error::MAX_MESSAGE_SIZE;
@@ -15,17 +15,17 @@ use crate::types::Part;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(from = "EnvelopeWire")]
 pub struct Envelope {
-    pub v: u8,                           // wire format version
-    pub msg_id: String,                  // opaque message ID (UUIDv7 string)
-    pub from: String,                    // sender public key (hex)
-    pub to: String,                      // recipient public key (hex)
-    pub ts: String,                      // ISO 8601 timestamp
-    pub thread_id: Option<String>,       // thread ID (optional)
-    pub reply_to: Option<String>,        // reply-to msg_id (optional)
-    pub role: Option<String>,            // sender role (optional)
-    pub parts: Vec<Part>,                // message parts (v2)
+    pub v: u8,                     // wire format version
+    pub msg_id: String,            // opaque message ID (UUIDv7 string)
+    pub from: String,              // sender public key (hex)
+    pub to: String,                // recipient public key (hex)
+    pub ts: String,                // ISO 8601 timestamp
+    pub thread_id: Option<String>, // thread ID (optional)
+    pub reply_to: Option<String>,  // reply-to msg_id (optional)
+    pub role: Option<String>,      // sender role (optional)
+    pub parts: Vec<Part>,          // message parts (v2)
     #[serde(skip_serializing_if = "String::is_empty", default)]
-    pub msg: String,                     // legacy v1 text field
+    pub msg: String, // legacy v1 text field
     /// Schnorr signature over canonical envelope hash (local transport authenticity).
     /// Omitted when None (e.g. Nostr transport where NIP-59 provides authenticity).
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -64,7 +64,9 @@ impl From<EnvelopeWire> for Envelope {
     fn from(wire: EnvelopeWire) -> Self {
         // v1 compat: if parts is empty, build a TextPart from msg
         let parts = if wire.parts.is_empty() && !wire.msg.is_empty() {
-            vec![Part::TextPart { text: wire.msg.clone() }]
+            vec![Part::TextPart {
+                text: wire.msg.clone(),
+            }]
         } else {
             wire.parts
         };
@@ -86,12 +88,7 @@ impl From<EnvelopeWire> for Envelope {
 
 impl Envelope {
     /// Create a new v2 Envelope. msg_id must be supplied by the caller.
-    pub fn new_v2(
-        msg_id: String,
-        from: String,
-        to: String,
-        parts: Vec<Part>,
-    ) -> Self {
+    pub fn new_v2(msg_id: String, from: String, to: String, parts: Vec<Part>) -> Self {
         Self {
             v: 2,
             msg_id,
@@ -162,7 +159,8 @@ impl Envelope {
         let msg = Message::from_digest(hash);
 
         // Parse signature
-        let sig = sig_hex.parse::<Signature>()
+        let sig = sig_hex
+            .parse::<Signature>()
             .map_err(|e| anyhow::anyhow!("invalid sig hex: {e}"))?;
 
         match SECP256K1.verify_schnorr(&sig, &msg, &xonly) {
@@ -181,8 +179,7 @@ impl Envelope {
 /// 4. SHA-256 hash of the canonical bytes
 pub fn canonical_envelope_hash(envelope: &Envelope) -> [u8; 32] {
     // Serialize to JSON Value
-    let mut val = serde_json::to_value(envelope)
-        .expect("Envelope always serializes to valid JSON");
+    let mut val = serde_json::to_value(envelope).expect("Envelope always serializes to valid JSON");
 
     // Remove sig field from the object
     if let serde_json::Value::Object(ref mut map) = val {
@@ -313,7 +310,9 @@ mod tests {
             "01950000-0000-7000-8000-000000000001".to_string(),
             "aabbcc".to_string(),
             "ddeeff".to_string(),
-            vec![Part::TextPart { text: "hello v2".to_string() }],
+            vec![Part::TextPart {
+                text: "hello v2".to_string(),
+            }],
         );
         let json = serde_json::to_string(&env).unwrap();
         let parsed: Envelope = serde_json::from_str(&json).unwrap();
@@ -326,13 +325,17 @@ mod tests {
             _ => panic!("expected TextPart"),
         }
         // Verify RFC wire format: type discriminator is "text", not "text_part"
-        assert!(json.contains(r#""type":"text""#), "Part type must serialize as 'text' per RFC");
+        assert!(
+            json.contains(r#""type":"text""#),
+            "Part type must serialize as 'text' per RFC"
+        );
     }
 
     #[test]
     fn v1_compat_deserialize() {
         // v1 wire format: no msg_id, no parts, has msg field
-        let v1_json = r#"{"v":1,"from":"aabbcc","to":"ddeeff","msg":"hello v1","ts":"2026-03-23T00:00:00Z"}"#;
+        let v1_json =
+            r#"{"v":1,"from":"aabbcc","to":"ddeeff","msg":"hello v1","ts":"2026-03-23T00:00:00Z"}"#;
         let env: Envelope = serde_json::from_str(v1_json).unwrap();
         assert_eq!(env.v, 1);
         assert_eq!(env.msg, "hello v1");
@@ -361,7 +364,10 @@ mod tests {
     #[test]
     fn message_size_cap() {
         let big_msg = "x".repeat(8193);
-        assert!(big_msg.len() > 8192, "C7: messages over 8KB should be rejected");
+        assert!(
+            big_msg.len() > 8192,
+            "C7: messages over 8KB should be rejected"
+        );
     }
 
     #[test]
@@ -392,7 +398,9 @@ mod tests {
             "01950000-0000-7000-8000-000000000002".to_string(),
             pk_hex.clone(),
             "ddeeff".to_string(),
-            vec![Part::TextPart { text: "sig test".to_string() }],
+            vec![Part::TextPart {
+                text: "sig test".to_string(),
+            }],
         );
 
         // 3. Sign the envelope
@@ -407,8 +415,8 @@ mod tests {
         env.ts = "2099-01-01T00:00:00Z".to_string();
         let tampered_result = env.verify_sig();
         match tampered_result {
-            Ok(false) => {}  // expected: invalid sig
-            Err(_) => {}     // also acceptable: parsing error
+            Ok(false) => {} // expected: invalid sig
+            Err(_) => {}    // also acceptable: parsing error
             Ok(true) => panic!("tampered envelope must not verify"),
         }
 
@@ -418,11 +426,14 @@ mod tests {
         assert!(json.contains("\"sig\""), "sig field must appear in JSON");
         let parsed: Envelope = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.sig, env.sig, "sig must survive JSON roundtrip");
-        assert_eq!(parsed.verify_sig().unwrap(), true, "deserialized envelope must verify");
+        assert_eq!(
+            parsed.verify_sig().unwrap(),
+            true,
+            "deserialized envelope must verify"
+        );
 
         // 7. Transport-aware: caller determines transport context (not an envelope field).
         // When caller knows message arrived via Nostr, it should skip verify_sig().
         // Transport is NOT stored in Envelope per RFC — it's caller context.
     }
-
 }

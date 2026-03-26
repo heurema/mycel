@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use nostr_sdk::prelude::*;
 use std::time::Duration;
 
-use super::{ReceivedEnvelope, RelayHealth, SendReport, Transport};
+use super::{Collector, OutboundTransport, ReceivedEnvelope, RelayHealth, SendReport};
 use crate::nostr as mycel_nostr;
 
 pub struct NostrTransport {
@@ -29,8 +29,7 @@ async fn do_send(
 ) -> Result<SendReport> {
     let pubkey = keys.public_key();
     let client = mycel_nostr::build_client(keys, &relay_urls).await?;
-    let rumor = EventBuilder::new(Kind::PrivateDirectMessage, env_json)
-        .build(pubkey);
+    let rumor = EventBuilder::new(Kind::PrivateDirectMessage, env_json).build(pubkey);
     let (event_id, ok_count) =
         mycel_nostr::publish_gift_wrap(&client, &relay_urls, &recipient, rumor, timeout).await?;
     client.disconnect().await;
@@ -76,7 +75,7 @@ async fn do_receive(
 }
 
 #[async_trait]
-impl Transport for NostrTransport {
+impl OutboundTransport for NostrTransport {
     async fn send(&self, keys: &Keys, recipient: &PublicKey, env_json: &str) -> Result<SendReport> {
         do_send(
             self.relay_urls.clone(),
@@ -84,16 +83,6 @@ impl Transport for NostrTransport {
             keys.clone(),
             *recipient,
             env_json.to_string(),
-        )
-        .await
-    }
-
-    async fn receive(&self, keys: &Keys, since: u64) -> Result<Vec<ReceivedEnvelope>> {
-        do_receive(
-            self.relay_urls.clone(),
-            self.timeout,
-            keys.clone(),
-            since,
         )
         .await
     }
@@ -113,5 +102,12 @@ impl Transport for NostrTransport {
             client.disconnect().await;
         }
         results
+    }
+}
+
+#[async_trait]
+impl Collector for NostrTransport {
+    async fn collect(&self, keys: &Keys, since: u64) -> Result<Vec<ReceivedEnvelope>> {
+        do_receive(self.relay_urls.clone(), self.timeout, keys.clone(), since).await
     }
 }

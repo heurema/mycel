@@ -4,12 +4,15 @@ use tracing_subscriber::EnvFilter;
 
 mod cli;
 mod config;
+mod core;
 mod crypto;
 mod envelope;
 mod error;
 mod nostr;
 mod store;
 mod sync;
+#[cfg(test)]
+mod test_support;
 mod transport;
 mod types;
 

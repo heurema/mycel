@@ -28,8 +28,8 @@
     },
     {
       "term": "envelope",
-      "definition": "mycel's wire format: JSON with version, from, to, message, timestamp. Carried inside encrypted Nostr events.",
-      "source": "project.glossary.json (existing)"
+      "definition": "Canonical mycel message envelope. Transport-neutral message schema carrying version, sender, logical IDs (`msg_id`, `thread_id`, `reply_to`), parts, and optional local signature metadata. It is the core truth, not a relay event or raw SQLite row.",
+      "source": "docs/rfc-local-first-transport-boundary.md"
     },
     {
       "term": "Gift Wrap",
@@ -43,8 +43,8 @@
     },
     {
       "term": "inbox",
-      "definition": "Local SQLite table of received messages. Populated by `mycel inbox` command which fetches from relays.",
-      "source": "project.glossary.json (existing)"
+      "definition": "Normalized mailbox view backed by the `messages` table. Inbox commands should read materialized messages after transport-specific frames pass through ingest.",
+      "source": "docs/architecture.md"
     },
     {
       "term": "sync cursor",
@@ -53,8 +53,48 @@
     },
     {
       "term": "sync-on-command",
-      "definition": "v0.1 architecture: each CLI command connects to relays, does work, disconnects. No background daemon.",
-      "source": "project.glossary.json (existing)"
+      "definition": "Default runtime model: each CLI command performs one bounded unit of work and exits. `mycel watch` is a foreground poller, not a required daemon.",
+      "source": "docs/architecture.md"
+    },
+    {
+      "term": "local-direct",
+      "definition": "Default same-user local transport. Sender writes a signed envelope frame into the recipient's SQLite/WAL-backed mailbox storage without network or a daemon.",
+      "source": "docs/rfc-local-first-transport-boundary.md"
+    },
+    {
+      "term": "local-gateway",
+      "definition": "Optional local fallback transport for sandbox/container/user-boundary cases where direct SQLite writes are not viable. Not the default path.",
+      "source": "docs/rfc-local-first-transport-boundary.md"
+    },
+    {
+      "term": "transport boundary",
+      "definition": "The architectural seam between CLI intent and mailbox state: router selects an endpoint, transport delivers a raw frame, ingress stores it, and ingest normalizes it into `messages`.",
+      "source": "docs/rfc-local-first-transport-boundary.md"
+    },
+    {
+      "term": "router",
+      "definition": "Core component that resolves an agent reference to an endpoint and transport route. It chooses endpoints; CLI handlers should not branch directly on transport details.",
+      "source": "docs/rfc-local-first-transport-boundary.md"
+    },
+    {
+      "term": "ingress frame",
+      "definition": "Raw inbound transport artifact stored before parse/auth/trust/dedup/materialization. Local, Nostr, and future A2A inputs should all land here.",
+      "source": "docs/rfc-local-first-transport-boundary.md"
+    },
+    {
+      "term": "endpoint directory",
+      "definition": "Transport-aware mapping of agent references to concrete endpoints (local DB path, gateway path, relay-oriented identity, or A2A endpoint). Planned as `agent_endpoints`.",
+      "source": "docs/rfc-local-first-transport-boundary.md"
+    },
+    {
+      "term": "A2A gateway",
+      "definition": "Optional bridge layer that maps A2A agent cards, messages, tasks, and artifacts to/from mycel ingress frames. It is an adapter, not the core mailbox model.",
+      "source": "docs/rfc-local-first-transport-boundary.md"
+    },
+    {
+      "term": "MCP adapter",
+      "definition": "Optional outer tool/resource surface over normalized mailbox operations. MCP is not a transport and not a source of truth for mailbox state.",
+      "source": "docs/rfc-local-first-transport-boundary.md"
     },
     {
       "term": "Direction",
@@ -106,6 +146,17 @@
     "key storage backend": "IdentityStorage",
     "async db": "Db",
     "spawn_blocking wrapper": "Db",
-    "domain errors": "MycelError"
+    "domain errors": "MycelError",
+    "canonical envelope": "envelope",
+    "local transport": "local-direct",
+    "local direct": "local-direct",
+    "local gateway": "local-gateway",
+    "routing boundary": "transport boundary",
+    "endpoint resolver": "router",
+    "raw frame": "ingress frame",
+    "agent endpoints": "endpoint directory",
+    "A2A bridge": "A2A gateway",
+    "agent card bridge": "A2A gateway",
+    "MCP bridge": "MCP adapter"
   }
 }

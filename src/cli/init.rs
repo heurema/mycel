@@ -37,18 +37,11 @@ fn extract_host_port(url: &str) -> Option<(String, u16)> {
 }
 
 pub async fn run() -> Result<()> {
-    run_with_dirs(
-        &config::config_dir()?,
-        &config::data_dir()?,
-    )
-    .await
+    run_with_dirs(&config::config_dir()?, &config::data_dir()?).await
 }
 
 /// Inner implementation allowing test overrides for config/data directories.
-pub async fn run_with_dirs(
-    cfg_dir: &std::path::Path,
-    data_dir: &std::path::Path,
-) -> Result<()> {
+pub async fn run_with_dirs(cfg_dir: &std::path::Path, data_dir: &std::path::Path) -> Result<()> {
     let enc_path = cfg_dir.join("key.enc");
 
     // AC8: refuse to overwrite existing key
@@ -97,7 +90,9 @@ pub async fn run_with_dirs(
             let passphrase = if let Ok(p) = std::env::var("MYCEL_KEY_PASSPHRASE") {
                 zeroize::Zeroizing::new(p)
             } else {
-                zeroize::Zeroizing::new(rpassword::prompt_password("Enter passphrase to protect your key: ")?)
+                zeroize::Zeroizing::new(rpassword::prompt_password(
+                    "Enter passphrase to protect your key: ",
+                )?)
             };
             crypto::store_key_file(&enc_path, &passphrase, &secret_hex)?;
             crypto::StorageBackend::EncryptedFile
@@ -131,18 +126,22 @@ pub async fn run_with_dirs(
     }
 
     if reachable.is_empty() {
-        println!(
-            "Warning: no relays reachable. Check your network connection."
-        );
+        println!("Warning: no relays reachable. Check your network connection.");
     } else {
-        println!("{}/{} relays reachable.", reachable.len(), cfg.relays.urls.len());
+        println!(
+            "{}/{} relays reachable.",
+            reachable.len(),
+            cfg.relays.urls.len()
+        );
     }
 
     // Publish kind:10050 inbox relay list (non-blocking — warn on error, never abort init)
     if !reachable.is_empty() {
         let inbox_relays: Vec<String> = reachable.iter().take(3).cloned().collect();
         let publish_timeout = std::time::Duration::from_secs(3);
-        if let Err(e) = mycel_nostr::publish_inbox_relay_list(&keys, &inbox_relays, publish_timeout).await {
+        if let Err(e) =
+            mycel_nostr::publish_inbox_relay_list(&keys, &inbox_relays, publish_timeout).await
+        {
             tracing::warn!("could not publish inbox relay list (kind:10050): {e}");
         }
     } else {
@@ -214,24 +213,31 @@ mod tests {
         let loaded: crate::config::Config =
             toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
         assert!(loaded.relays.urls.contains(&"wss://nos.lol".to_string()));
-        assert!(loaded
-            .relays
-            .urls
-            .contains(&"wss://relay.damus.io".to_string()));
-        assert!(loaded
-            .relays
-            .urls
-            .contains(&"wss://relay.nostr.band".to_string()));
+        assert!(
+            loaded
+                .relays
+                .urls
+                .contains(&"wss://relay.damus.io".to_string())
+        );
+        assert!(
+            loaded
+                .relays
+                .urls
+                .contains(&"wss://relay.nostr.band".to_string())
+        );
         assert_eq!(loaded.identity.storage, IdentityStorage::Keychain);
     }
 
     #[tokio::test]
     async fn test_init_no_overwrite() {
+        let _env_guard = crate::test_support::env_lock().lock().unwrap();
         let dir = TempDir::new().unwrap();
         let cfg_dir = dir.path().join("config");
         let data_dir = dir.path().join("data");
         std::fs::create_dir_all(&cfg_dir).unwrap();
-        unsafe { std::env::set_var("MYCEL_KEY_PASSPHRASE", "test-passphrase-ci"); }
+        unsafe {
+            std::env::set_var("MYCEL_KEY_PASSPHRASE", "test-passphrase-ci");
+        }
 
         let enc_path = cfg_dir.join("key.enc");
         let keys = nostr_sdk::Keys::generate();
@@ -249,6 +255,8 @@ mod tests {
             "error should mention 'already initialized', got: {msg}"
         );
 
-        unsafe { std::env::remove_var("MYCEL_KEY_PASSPHRASE"); }
+        unsafe {
+            std::env::remove_var("MYCEL_KEY_PASSPHRASE");
+        }
     }
 }

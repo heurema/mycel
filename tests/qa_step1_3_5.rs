@@ -399,13 +399,34 @@ fn default_relays_no_duplicates() {
 #[test]
 fn default_relays_contains_expected_known_relays() {
     let urls: Vec<&str> = DEFAULT_RELAYS.to_vec();
-    assert!(urls.contains(&"wss://nos.lol"), "nos.lol must be in default relays");
-    assert!(urls.contains(&"wss://relay.damus.io"), "damus must be in default relays");
-    assert!(urls.contains(&"wss://relay.nostr.band"), "nostr.band must be in default relays");
-    assert!(urls.contains(&"wss://relay.primal.net"), "primal.net must be in default relays");
-    assert!(urls.contains(&"wss://relay.snort.social"), "snort.social must be in default relays");
-    assert!(urls.contains(&"wss://nostr.mutinywallet.com"), "mutinywallet must be in default relays");
-    assert!(urls.contains(&"wss://nostr.wine"), "nostr.wine must be in default relays");
+    assert!(
+        urls.contains(&"wss://nos.lol"),
+        "nos.lol must be in default relays"
+    );
+    assert!(
+        urls.contains(&"wss://relay.damus.io"),
+        "damus must be in default relays"
+    );
+    assert!(
+        urls.contains(&"wss://relay.nostr.band"),
+        "nostr.band must be in default relays"
+    );
+    assert!(
+        urls.contains(&"wss://relay.primal.net"),
+        "primal.net must be in default relays"
+    );
+    assert!(
+        urls.contains(&"wss://relay.snort.social"),
+        "snort.social must be in default relays"
+    );
+    assert!(
+        urls.contains(&"wss://nostr.mutinywallet.com"),
+        "mutinywallet must be in default relays"
+    );
+    assert!(
+        urls.contains(&"wss://nostr.wine"),
+        "nostr.wine must be in default relays"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -472,7 +493,10 @@ fn send_report_ok_count_equals_total_is_valid() {
         ok_count: 7,
         total: 7,
     };
-    assert_eq!(report.ok_count, report.total, "all relays accepted: ok_count == total is valid");
+    assert_eq!(
+        report.ok_count, report.total,
+        "all relays accepted: ok_count == total is valid"
+    );
 }
 
 #[test]
@@ -500,7 +524,10 @@ fn received_envelope_fields_accessible() {
     assert_eq!(env.transport_msg_id, "ev_xyz_001");
     assert_eq!(env.sender_hex, "aabbccddeeff0011");
     assert!(env.env_json.contains("\"v\":1"));
-    assert!(env.event_ts > 1_000_000_000, "event_ts must be a unix epoch");
+    assert!(
+        env.event_ts > 1_000_000_000,
+        "event_ts must be a unix epoch"
+    );
 }
 
 #[test]
@@ -513,8 +540,14 @@ fn relay_health_connected_and_disconnected_variants() {
         url: "wss://dead.relay".to_string(),
         connected: false,
     };
-    assert!(connected.connected, "connected relay must have connected=true");
-    assert!(!disconnected.connected, "disconnected relay must have connected=false");
+    assert!(
+        connected.connected,
+        "connected relay must have connected=true"
+    );
+    assert!(
+        !disconnected.connected,
+        "disconnected relay must have connected=false"
+    );
     assert_ne!(connected.url, disconnected.url);
 }
 
@@ -544,7 +577,8 @@ fn get_known_nostr_ids_returns_only_inbound() {
          VALUES ('inbound_001', 'in', 'sender_aabb', 'recipient_ccdd', 'hello',
          'received', 'unread', '2026-03-20T12:00:00Z', '2026-03-20T12:00:01Z', 'msg_001', 'nostr')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Insert one outbound — must NOT appear in get_known_nostr_ids
     conn.execute(
@@ -553,7 +587,8 @@ fn get_known_nostr_ids_returns_only_inbound() {
          VALUES ('outbound_001', 'out', 'recipient_ccdd', 'sender_aabb', 'reply',
          'sent', 'read', '2026-03-20T13:00:00Z', '2026-03-20T13:00:01Z', 'msg_002', 'nostr')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     let ids = get_known_nostr_ids(&conn).expect("must not error");
     assert_eq!(
@@ -575,7 +610,8 @@ fn get_known_nostr_ids_timestamp_is_correct_unix_epoch() {
          VALUES ('ts_test_id', 'in', 'sender', 'recipient', 'msg',
          'received', 'unread', '2026-03-20T00:00:00Z', '2026-03-20T00:00:01Z', 'msg_ts', 'nostr')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // strftime('%s', '2026-03-20T00:00:00Z') = 1773964800 (verified via Python UTC epoch)
     let expected_ts: u64 = 1773964800;
@@ -601,10 +637,12 @@ fn get_known_nostr_ids_multiple_inbound_all_returned() {
                  VALUES ('id_{i:04}', 'in', 'sender', 'recipient', 'msg {i}',
                  'received', 'unread', '2026-03-{:02}T12:00:00Z', '2026-03-{:02}T12:00:01Z',
                  'msgid_{i:04}', 'nostr')",
-                20 + i, 20 + i
+                20 + i,
+                20 + i
             ),
             [],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     let ids = get_known_nostr_ids(&conn).expect("must not error");
@@ -636,7 +674,8 @@ fn get_known_nostr_ids_malformed_created_at_crashes_with_null() {
          VALUES ('bad_ts_id', 'in', 'sender', 'recipient', 'msg',
          'received', 'unread', 'NOT_A_DATE', 'NOT_A_DATE', 'nostr')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // BUG: this returns Err(InvalidColumnType(..., Null)) instead of Ok([(id, 0)])
     let result = get_known_nostr_ids(&conn);
@@ -657,8 +696,13 @@ fn get_known_nostr_ids_malformed_created_at_crashes_with_null() {
 fn schema_fresh_db_reaches_v4() {
     // Fresh SCHEMA sets user_version=4 directly.
     let conn = open_mem();
-    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 4, "fresh in-memory SCHEMA must set user_version=4, got: {version}");
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        version, 4,
+        "fresh in-memory SCHEMA must set user_version=4, got: {version}"
+    );
 }
 
 #[test]
@@ -672,7 +716,15 @@ fn schema_has_all_required_tables() {
         .filter_map(|r| r.ok())
         .collect();
 
-    for expected in &["messages", "contacts", "sync_state", "relays", "outbox", "acks", "threads"] {
+    for expected in &[
+        "messages",
+        "contacts",
+        "sync_state",
+        "relays",
+        "outbox",
+        "acks",
+        "threads",
+    ] {
         assert!(
             tables.contains(&expected.to_string()),
             "table '{expected}' must exist after SCHEMA, got tables: {tables:?}"
@@ -692,9 +744,20 @@ fn schema_messages_has_all_v4_columns() {
         .collect();
 
     for expected_col in &[
-        "nostr_id", "direction", "sender", "recipient", "content",
-        "delivery_status", "read_status", "created_at", "received_at",
-        "msg_id", "thread_id", "reply_to", "transport", "transport_msg_id",
+        "nostr_id",
+        "direction",
+        "sender",
+        "recipient",
+        "content",
+        "delivery_status",
+        "read_status",
+        "created_at",
+        "received_at",
+        "msg_id",
+        "thread_id",
+        "reply_to",
+        "transport",
+        "transport_msg_id",
     ] {
         assert!(
             cols.contains(&expected_col.to_string()),
@@ -714,9 +777,19 @@ fn schema_outbox_has_all_expected_columns() {
         .filter_map(|r| r.ok())
         .collect();
 
-    for col in &["msg_id", "recipient_hex", "envelope_json", "relay_urls",
-                  "status", "retry_count", "ok_relay_count", "created_at",
-                  "last_attempt_at", "next_retry_at", "sent_at"] {
+    for col in &[
+        "msg_id",
+        "recipient_hex",
+        "envelope_json",
+        "relay_urls",
+        "status",
+        "retry_count",
+        "ok_relay_count",
+        "created_at",
+        "last_attempt_at",
+        "next_retry_at",
+        "sent_at",
+    ] {
         assert!(
             cols.contains(&col.to_string()),
             "outbox must have column '{col}', got: {cols:?}"
@@ -735,7 +808,13 @@ fn schema_acks_has_all_expected_columns() {
         .filter_map(|r| r.ok())
         .collect();
 
-    for col in &["msg_id", "ack_sender", "ack_status", "created_at", "sent_at"] {
+    for col in &[
+        "msg_id",
+        "ack_sender",
+        "ack_status",
+        "created_at",
+        "sent_at",
+    ] {
         assert!(
             cols.contains(&col.to_string()),
             "acks table must have column '{col}', got: {cols:?}"
@@ -751,7 +830,8 @@ fn migration_v1_schema_manually_upgraded_to_v4_structure() {
     conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
 
     // Step 1: v1 schema (no msg_id, no outbox, no acks, no threads)
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS messages (
             nostr_id        TEXT PRIMARY KEY,
             direction       TEXT NOT NULL,
@@ -774,7 +854,9 @@ fn migration_v1_schema_manually_upgraded_to_v4_structure() {
             last_sync   INTEGER NOT NULL DEFAULT 0
         );
         PRAGMA user_version = 1;
-    ").unwrap();
+    ",
+    )
+    .unwrap();
 
     // Insert a v1 row
     conn.execute(
@@ -783,7 +865,8 @@ fn migration_v1_schema_manually_upgraded_to_v4_structure() {
          VALUES ('ev_v1_001', 'in', 'sender_hex', 'recipient_hex', 'hello v1',
          'received', 'unread', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Step 2: v1→v2 migration (from MIGRATION_V1_TO_V2 in store/mod.rs)
     let migration_v1_to_v2: &[&str] = &[
@@ -809,16 +892,23 @@ fn migration_v1_schema_manually_upgraded_to_v4_structure() {
         conn.execute_batch(stmt).unwrap();
     }
 
-    let v2: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    let v2: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(v2, 2, "after v1→v2: user_version must be 2");
 
     // Verify backfill
-    let msg_id: String = conn.query_row(
-        "SELECT msg_id FROM messages WHERE nostr_id = 'ev_v1_001'",
-        [],
-        |r| r.get(0),
-    ).unwrap();
-    assert_eq!(msg_id, "legacy:ev_v1_001", "v1→v2 backfill: msg_id must be 'legacy:' || nostr_id");
+    let msg_id: String = conn
+        .query_row(
+            "SELECT msg_id FROM messages WHERE nostr_id = 'ev_v1_001'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        msg_id, "legacy:ev_v1_001",
+        "v1→v2 backfill: msg_id must be 'legacy:' || nostr_id"
+    );
 
     // Step 3: v2→v3 migration (adds outbox)
     let migration_to_v3: &[&str] = &[
@@ -842,7 +932,9 @@ fn migration_v1_schema_manually_upgraded_to_v4_structure() {
         conn.execute_batch(stmt).unwrap();
     }
 
-    let v3: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    let v3: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(v3, 3, "after v2→v3: user_version must be 3");
 
     // Step 4: v3→v4 migration (adds acks)
@@ -861,7 +953,9 @@ fn migration_v1_schema_manually_upgraded_to_v4_structure() {
         conn.execute_batch(stmt).unwrap();
     }
 
-    let v4: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    let v4: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(v4, 4, "after v3→v4: user_version must be 4");
 
     // Final state: acks table must exist and be insertable
@@ -869,7 +963,8 @@ fn migration_v1_schema_manually_upgraded_to_v4_structure() {
         "INSERT INTO acks (msg_id, ack_sender, ack_status, created_at)
          VALUES ('msg_to_ack', 'ack_sender_hex', 'acknowledged', '2026-03-25T00:00:00Z')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
     let ack_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM acks", [], |r| r.get(0))
         .unwrap();
@@ -916,7 +1011,10 @@ type = "nostr"
     let toml_out = toml::to_string_pretty(&cfg).expect("serialize");
     let cfg2: Config = toml::from_str(&toml_out).expect("re-parse");
 
-    assert!(!cfg2.ack.enabled, "ack.enabled=false must survive roundtrip");
+    assert!(
+        !cfg2.ack.enabled,
+        "ack.enabled=false must survive roundtrip"
+    );
     assert_eq!(cfg2.ack.min_interval_secs, 120);
     assert_eq!(cfg2.relays.timeout_secs, 15);
     assert_eq!(cfg2.identity.storage, IdentityStorage::File);
@@ -1001,7 +1099,10 @@ urls = ["wss://nos.lol"]
 storage = "keychain"
 "#;
     let cfg: Config = toml::from_str(toml).expect("parse");
-    assert_eq!(cfg.relays.timeout_secs, 10, "timeout_secs serde default must be 10");
+    assert_eq!(
+        cfg.relays.timeout_secs, 10,
+        "timeout_secs serde default must be 10"
+    );
 }
 
 #[test]
@@ -1031,7 +1132,10 @@ fn send_report_ok_count_exceeds_total_is_not_caught_by_struct() {
         total: 7,
     };
     // The struct accepts this without panic — documents the missing validation.
-    assert_eq!(report.ok_count, 8, "struct has no ok_count <= total invariant enforcement");
+    assert_eq!(
+        report.ok_count, 8,
+        "struct has no ok_count <= total invariant enforcement"
+    );
     // To fix: add a validation in NostrTransport.send() or in SendReport constructor.
 }
 
@@ -1049,7 +1153,8 @@ fn get_known_nostr_ids_direction_exact_match() {
          VALUES ('corrupted_dir_id', 'corrupted', 'sender', 'recipient', 'msg',
          'received', 'unread', '2026-03-20T12:00:00Z', '2026-03-20T12:00:01Z', 'nostr')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     let ids = get_known_nostr_ids(&conn).expect("must not error");
     // SQL filters WHERE direction = 'in' — 'corrupted' must not match

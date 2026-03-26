@@ -1,302 +1,150 @@
-# mycel Architecture (v0.1)
+# mycel Architecture
 
-## Design: Sync-on-Command
+Date: 2026-04-11  
+Status: current runtime + accepted target boundary
 
-No daemon. Each CLI command is a short-lived process:
+`mycel` is an encrypted async **mailbox** for AI CLI agents. The product shape stays the same:
 
-```
-mycel send alice "msg"
-  │
-  ├── read encrypted key from disk → unlock (passphrase/keychain)
-  ├── connect to configured relays (WebSocket)
-  ├── build mycel envelope → NIP-44 encrypt → NIP-59 Gift Wrap
-  ├── publish to relays
-  ├── store in local SQLite outbox
-  ├── disconnect
-  └── exit
+- mailbox, not messenger
+- sync-on-command, not always-on runtime
+- local-first for same-user delivery
+- Nostr for remote async delivery
+- transport-neutral core state
 
-mycel inbox
-  │
-  ├── read encrypted key from disk → unlock
-  ├── connect to configured relays
-  ├── REQ filter: kind 1059 (Gift Wrap) where p-tag = own pubkey, since = last_sync
-  ├── receive events → EOSE (end of stored events)
-  ├── for each event: unwrap Gift Wrap → decrypt Seal → decrypt Rumor
-  ├── verify sender signature
-  ├── check trust tier (KNOWN → deliver, UNKNOWN → quarantine, BLOCKED → drop)
-  ├── store in local SQLite inbox
-  ├── update last_sync cursor
-  ├── disconnect
-  ├── display messages
-  └── exit
+The accepted boundary is defined in `docs/rfc-local-first-transport-boundary.md`. This page is the short architectural map.
+
+## Runtime model
+
+Default runtime remains short-lived CLI execution:
+
+```text
+command starts -> load config + keys -> do one bounded unit of work -> exit
 ```
 
-## Components
+Implications:
 
-### 1. mycel CLI (single binary)
+- no daemon is required for standard send/inbox flows
+- `mycel watch` is a foreground poller, not the architectural center
+- same-user local delivery must work without standing up a listener
 
-```
-mycel init                      # one-time setup
-mycel send <contact> "message"  # send private message
-mycel inbox [--json]            # fetch and display messages
-mycel contacts add/block/list   # manage allowlist
-mycel doctor                    # health check
-```
+## Core truth
 
-No subcommand groups beyond this. Flat, simple.
+The source of truth is **not** a Nostr event, a SQLite row shape, or an A2A task.
+The source of truth is the canonical mycel message model:
 
-### 2. Local Storage (SQLite)
+- `Envelope`
+- `Part`
+- `msg_id`
+- `thread_id`
+- `reply_to`
+- normalized `messages`
+- normalized `threads`
+- trust tiers + delivery/read state
 
-Single file: `~/.local/share/mycel/mycel.db`
+## Accepted transport boundary
 
-```sql
-CREATE TABLE messages (
-    nostr_id         TEXT PRIMARY KEY,     -- Nostr event id (dedup + PK)
-    direction        TEXT NOT NULL,        -- 'in' | 'out'
-    sender           TEXT NOT NULL,        -- sender pubkey hex
-    recipient        TEXT NOT NULL,        -- recipient pubkey hex
-    content          TEXT NOT NULL,        -- decrypted message text
-    delivery_status  TEXT NOT NULL,        -- in: 'received' | out: 'delivered' | 'failed'
-    read_status      TEXT NOT NULL,        -- 'unread' | 'read'
-    created_at       TEXT NOT NULL,        -- sender timestamp
-    received_at      TEXT NOT NULL         -- local receipt time
-);
+Canonical pipeline:
 
-CREATE TABLE contacts (
-    pubkey      TEXT PRIMARY KEY,
-    alias       TEXT,
-    trust_tier  TEXT NOT NULL DEFAULT 'unknown',  -- known | unknown | blocked
-    added_at    TEXT NOT NULL
-);
-
-CREATE TABLE sync_state (
-    relay_url   TEXT PRIMARY KEY,
-    last_sync   INTEGER NOT NULL DEFAULT 0  -- Unix timestamp for `since` filter
-);
-
-CREATE TABLE relays (
-    url         TEXT PRIMARY KEY,
-    enabled     BOOLEAN DEFAULT TRUE
-);
+```text
+send -> router -> transport -> ingress_frames -> ingest() -> messages -> inbox/watch/adapters
 ```
 
-### 3. Key Storage
+### Why this matters
 
-Private key encrypted at rest:
+This boundary fixes the current asymmetry where:
 
-**Option A: OS keychain** (preferred)
-- macOS Keychain, Linux Secret Service, Windows Credential Manager
-- via `keyring` crate
-- No passphrase prompt on each command
+- local send writes directly into `messages`
+- Nostr receive performs parse/auth/trust/dedup before `messages`
+- routing rules live in CLI branches instead of a router/directory layer
 
-**Option B: Passphrase-encrypted file**
-- `~/.config/mycel/key.enc`
-- Argon2id KDF → AES-256-GCM
-- Prompt on each command (or cache via env var / agent)
+With the new boundary, every transport lands **raw frames** and one ingest path decides what becomes mailbox state.
 
-### 4. Encryption Pipeline (send)
+## Delivery modes
 
-```
-message text
-  ↓ build mycel envelope JSON {"v":1, "from":..., "to":..., "msg":..., "ts":...}
-  ↓ NIP-44 encrypt to recipient pubkey
-  ↓ wrap as Rumor (unsigned event, kind 14)
-  ↓ NIP-44 encrypt to recipient
-  ↓ Seal (kind 13, signed by sender's real key)
-  ↓ NIP-44 encrypt to recipient
-  ↓ Gift Wrap (kind 1059, signed with EPHEMERAL random key, p-tag = recipient)
-  ↓ publish to recipient's relays
-```
+| Mode | Role | Notes |
+|------|------|-------|
+| `local-direct` | default same-user local delivery | direct SQLite/WAL write into recipient ingress, no daemon |
+| `local-gateway` | optional local fallback | for sandbox/container/user-boundary cases where direct DB write is not viable |
+| `nostr` | remote async delivery | existing encrypted relay path |
+| `a2a` | optional ecosystem bridge | gateway/adapter, not source of truth |
+| `mcp` | optional tool/resource surface | outer adapter only |
 
-Relay sees: ephemeral sender key + recipient pubkey. Nothing else.
+## Storage layers
 
-### 5. Decryption Pipeline (inbox)
+### Canonical mailbox storage
 
-```
-kind 1059 event from relay
-  ↓ decrypt outer layer (NIP-44, our key + ephemeral sender)
-  ↓ extract Seal (kind 13)
-  ↓ decrypt seal (NIP-44, our key + real sender)
-  ↓ extract Rumor (kind 14)
-  ↓ parse mycel envelope from content
-  ↓ verify: sender pubkey matches contact?
-  ↓ trust tier check
-  ↓ dedup by nostr_id
-  ↓ store in SQLite
-```
+These remain the normalized read model:
 
-### 6. Wire Format (mycel envelope)
+- `messages`
+- `threads`
+- `contacts`
+- `sync_state`
+- `outbox`
 
-Carried inside Nostr event content (encrypted):
+### Planned ingress layer
 
-```json
-{
-  "v": 1,
-  "from": "<sender-pubkey-hex>",
-  "to": "<recipient-pubkey-hex>",
-  "msg": "Review of PR #42 complete. 3 issues found.",
-  "ts": "2026-03-19T15:00:00Z"
-}
-```
+These are the additive pieces required by the accepted boundary:
 
-ID = Nostr event id (outer Gift Wrap). No separate envelope ID needed.
-Minimal. No threads, no types, no context — v0.1 is just text messages.
+- `ingress_frames` — raw inbound artifacts before auth/trust/dedup/materialization
+- `messages.source_frame_id` — traceability from normalized message to source frame
+- `agent_endpoints` — transport-capable endpoint directory used by router
 
-### 7. Relay Management
+## Current implementation status
 
-- Default relay preset shipped with binary (3-5 tested public relays)
-- `mycel init` tests connectivity to each relay
-- `mycel doctor` re-tests and reports status
-- Config: `~/.config/mycel/config.toml`
+What already exists in code:
 
-```toml
-[relays]
-urls = [
-  "wss://relay.damus.io",
-  "wss://nos.lol",
-  "wss://relay.nostr.band"
-]
+- Envelope v2 fields: `msg_id`, `thread_id`, `reply_to`, `role`, `parts`
+- local send + `self` alias
+- Nostr send/receive path
+- thread commands and normalized thread metadata in `messages`
+- trust tiers, outbox, ACK, sync logic
 
-[identity]
-# pubkey derived from stored key
-storage = "keychain"  # or "file"
+What is still structurally incomplete:
+
+- `cli/send.rs` still branches directly into local-vs-Nostr delivery
+- `src/transport/mod.rs` is still Nostr-shaped (`recipient: PublicKey`, `since: u64`)
+- local send signs envelopes but materializes `messages` rows directly instead of landing signed frames in ingress
+- `sync.rs` still parses/validates and writes final rows directly rather than emitting ingress frames
+- routing inputs are split across `contacts`, `[local.agents]`, and transport-specific code paths
+
+## Target module split
+
+Current crate layout stays valid, but the target responsibility split is:
+
+```text
+cli/*           -> gather user intent, call core
+core/router     -> resolve agent ref to endpoint
+core/directory  -> unify contacts/local endpoints/future remote endpoints
+core/ingest     -> parse/auth/trust/dedup/materialize
+transport/*     -> send or collect raw frames only
+store/*         -> persist ingress + normalized state
 ```
 
-### 8. Contact Exchange
+The important change is responsibility, not folder names.
 
-User-facing: npub address (standard Nostr bech32):
+## Adapter policy
 
-```bash
-$ mycel id
-Your address: npub1abc123...
+### A2A
 
-# Copy and share with contacts.
-# NIP-05 aliases (user@domain) planned for v0.2+
-```
+Use A2A only as an interop boundary:
 
-```bash
-$ mycel contacts add npub1def456... --alias alice
-Added alice (npub1def456...)
-```
+- Agent Card publication/discovery
+- HTTP/JSON-RPC + streaming bindings where needed
+- mapping between A2A payloads and mycel ingress frames
 
-### 9. Trust Tiers
+Do **not** make A2A task/message state the internal truth of `mycel`.
 
-| Tier | Behavior | How to set |
-|------|----------|------------|
-| KNOWN | Messages shown in inbox | `mycel contacts add` |
-| UNKNOWN | Stored but hidden (quarantine) | Default for new senders |
-| BLOCKED | Silently dropped, logged | `mycel contacts block` |
+### MCP
 
-`mycel inbox` shows KNOWN only. `mycel inbox --all` shows quarantine too.
+Use MCP only as an outer tool/resource adapter over normalized mailbox operations.
+It is not a transport and it is not the storage model.
 
-### 10. Safety Policy
+### ACP
 
-Messages from other agents/users are **DATA**, never instructions:
-- mycel never auto-injects messages into agent context
-- mycel never executes message content
-- `--json` output for agent consumption is clearly marked as external data
-- Rate limiting: max messages per unknown sender before auto-block
+Not a strategic dependency for the core architecture.
 
-## Contracts (frozen before scaffold)
+## References
 
-### C1: Send Success Semantics
-
-`mycel send` publishes to ALL configured relays in parallel. Timeout: 10 seconds per relay.
-
-| Outcome | Exit code | Outbox delivery_status | User message |
-|---------|-----------|------------------------|-------------|
-| ≥1 relay accepted (OK) | 0 | `delivered` | "Sent (N/M relays)" |
-| 0 relays accepted | 1 | `failed` | "Failed: no relay accepted" |
-| Partial (some OK, some error) | 0 | `delivered` | "Sent (N/M relays, K failed)" |
-| Network error (all unreachable) | 1 | `failed` | "Failed: no relays reachable" |
-| Timeout (no ack within 10s) | 1 | `failed` | "Failed: relay timeout" |
-
-Rule: **1 relay ack = success.** Return immediately after first ack, don't wait for others.
-Always write to outbox (both success and failure, for audit trail).
-Outbox uses `delivery_status` (delivered/failed), not inbox's `read_status` (pending/read).
-
-### C2: Sync Cursor and Dedup
-
-`mycel inbox` fetches with `since = last_sync - overlap_window`.
-
-- `overlap_window` = 120 seconds (covers relay propagation delay)
-- Dedup by `nostr_id` (UNIQUE constraint in SQLite, INSERT OR IGNORE)
-- `last_sync` updated to `now()` AFTER successful EOSE from each relay
-- Per-relay cursor (different relays may lag differently)
-
-This means: some events fetched twice → deduped locally. Best-effort: covers most clock skew and relay lag scenarios within 120s window.
-
-### C3: Local Storage Encryption
-
-v0.1 decision: **encrypted in transit, plaintext at rest in SQLite.**
-
-Rationale:
-- Key is already encrypted at rest (keychain or passphrase file)
-- Encrypting individual DB rows adds complexity with no clear threat model improvement
-  (if attacker has disk access, they can also extract decrypted key from memory)
-- SQLite file permissions: 0600 (owner only)
-- Documented honestly in README: "messages are encrypted in transit; local database is not encrypted"
-
-Future: SQLite encryption extension (SQLCipher) or per-row encryption in v0.2+.
-
-### C4: Key Storage Default
-
-| Environment | Default | Fallback |
-|-------------|---------|----------|
-| macOS | Keychain (via `keyring`) | Passphrase file |
-| Linux desktop | Secret Service (via `keyring`) | Passphrase file |
-| Linux headless / CI | Passphrase file | Env var `MYCEL_KEY_PASSPHRASE` |
-
-Detection: `mycel init` tries keychain first.
-- Keychain **unavailable** (no backend) → auto-fallback to passphrase file + inform user.
-- Keychain **error** (denied/locked) → show error, suggest `mycel init --file` to force file backend.
-- Keychain **available** → use it silently.
-
-Passphrase file: `~/.config/mycel/key.enc` (argon2id KDF → AES-256-GCM).
-
-CI/headless mode: `MYCEL_KEY_PASSPHRASE` env var skips interactive prompt.
-
-### C5: --json Output Contract
-
-`mycel inbox --json` outputs one JSON object per line (JSONL):
-
-```json
-{"v":1,"nostr_id":"abc...","from":"npub1...","content":"message text","ts":"2026-03-20T10:00:00Z","status":"pending"}
-```
-
-- stdout = machine data only (JSONL)
-- stderr = diagnostics, warnings, errors
-- `--json` flag suppresses all human-friendly formatting
-- `"v":1` embedded in each line (schema versioning)
-- `--json` content is **raw** (not sanitized) — agents handle their own safety
-- `--json` + `--raw` is redundant (json always raw)
-
-### C6: Terminal Safety
-
-Incoming message content is sanitized before display (human mode only, not --json):
-- Strip ANSI escape sequences
-- Strip control characters (except \n)
-- Truncate at **8192 bytes** with "[truncated]" marker (matches C7 cap)
-- `--raw` flag to disable sanitization (explicit opt-in)
-
-### C7: Message Size Cap
-
-- Max message **input** payload: 8192 bytes (UTF-8 text, before encryption)
-- `mycel send` rejects oversized with clear error and byte count
-- Post-encryption overhead (~2-3x for Gift Wrap) stays within typical relay limits (16-64KB)
-- Relay-specific limits handled gracefully: if relay rejects, report which relay and why
-
-## What v0.1 Does NOT Have
-
-- No daemon / background process
-- No hooks / MCP integration
-- No topics / pub/sub channels
-- No threads / replies
-- No attachments / files
-- No task delegation (NIP-90)
-- No agent RPC (NIP-46)
-- No NATS transport
-- No capability advertisement
-- No group messaging
-
-All of these are v0.2+ additions that build on top of v0.1 foundation.
+- `docs/rfc-v0.2-phase0-contracts.md` — message identity and envelope contracts
+- `docs/rfc-local-first-transport-boundary.md` — accepted transport boundary
+- `docs/plan-local-agent-mesh.md` — phased implementation plan
