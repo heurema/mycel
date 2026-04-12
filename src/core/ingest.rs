@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::envelope;
 use crate::error::MAX_MESSAGE_SIZE;
 use crate::store::{self, IngressFrameRow, MessageRow};
-use crate::types::{
-    AckStatus, DeliveryStatus, Direction, MessageMeta, Part, ReadStatus, TrustTier,
-};
+use crate::types::{DeliveryStatus, Direction, MessageMeta, Part, ReadStatus, TrustTier};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IngestReport {
@@ -23,7 +21,7 @@ struct NostrAuthMeta {
 }
 
 enum FrameDecision {
-    Message(MessageRow, MessageMeta),
+    Message(Box<MessageRow>, MessageMeta),
     AckHandled,
     Reject(String),
 }
@@ -197,7 +195,7 @@ fn ingest_one_frame(conn: &Connection, frame: &IngressFrameRow) -> Result<FrameD
         source_frame_id: Some(frame.frame_id.clone()),
     };
 
-    Ok(FrameDecision::Message(row, meta))
+    Ok(FrameDecision::Message(Box::new(row), meta))
 }
 
 fn maybe_handle_ack(
@@ -237,16 +235,10 @@ fn maybe_handle_ack(
         return Ok(Some(FrameDecision::AckHandled));
     }
 
-    let ack_status = match status {
-        AckStatus::Acknowledged => AckStatus::Acknowledged,
-        AckStatus::Pending => AckStatus::Pending,
-        AckStatus::Failed => AckStatus::Failed,
-    };
-
     let ack_row = store::AckRow {
         msg_id: original_msg_id,
         ack_sender: sender_hex.to_string(),
-        ack_status,
+        ack_status: status,
         created_at: ack_ts,
         sent_at: None,
     };

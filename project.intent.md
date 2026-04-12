@@ -1,6 +1,6 @@
 ---
 project: mycel
-version: 0.3.0
+version: 0.4.0
 status: active
 created: 2026-03-19
 language: Rust
@@ -93,7 +93,7 @@ AI CLI agents run in isolated terminal sessions with no native mailbox for cross
 v0.1.x  foundation: init/send/inbox/contacts/doctor
 v0.2.x  Envelope v2 + local transport + threads
 v0.3.x  watch/status + outbox retry + ACK + NIP-77 + relay routing
-next    transport-neutral core boundary: router + unified ingress + endpoint directory
+v0.4.x  transport-neutral core boundary: router + unified ingress + endpoint directory
 later   optional local-gateway, A2A bridge, MCP outer adapter, richer structured payloads
 ```
 

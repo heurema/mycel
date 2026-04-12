@@ -141,7 +141,6 @@ impl Envelope {
     /// - `Err(_)` if parsing `from` pubkey or `sig` hex fails
     ///
     /// Callers MUST skip this when `transport == "nostr"` (NIP-59 provides authenticity).
-    #[allow(dead_code)] // Used by inbox/sync when local transport verification lands
     pub fn verify_sig(&self) -> anyhow::Result<bool> {
         let sig_hex = match &self.sig {
             Some(s) => s,
@@ -408,7 +407,7 @@ mod tests {
         assert!(env.sig.is_some(), "sig field must be set after sign()");
 
         // 4. Verify: valid sig returns Ok(true)
-        assert_eq!(env.verify_sig().unwrap(), true, "valid sig should verify");
+        assert!(env.verify_sig().unwrap(), "valid sig should verify");
 
         // 5. Tamper with a field and re-verify: should return Ok(false) or Err
         let original_ts = env.ts.clone();
@@ -426,9 +425,8 @@ mod tests {
         assert!(json.contains("\"sig\""), "sig field must appear in JSON");
         let parsed: Envelope = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.sig, env.sig, "sig must survive JSON roundtrip");
-        assert_eq!(
+        assert!(
             parsed.verify_sig().unwrap(),
-            true,
             "deserialized envelope must verify"
         );
 

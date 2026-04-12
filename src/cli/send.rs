@@ -94,16 +94,12 @@ async fn run_local(
 
     sender_db
         .run(move |conn| {
-            insert_local_message(
+            insert_outbound_local_copy(
                 conn,
-                &msg_id_clone, // nostr_id = msg_id for outbound
                 &msg_id_clone,
-                Direction::Out,
                 &sender_hex_clone,
                 &recipient_hex_clone,
                 &message_clone,
-                DeliveryStatus::Delivered,
-                ReadStatus::Read,
                 &env_ts,
                 &now_clone,
             )
@@ -126,7 +122,7 @@ async fn run_local(
             .run(move |conn| {
                 let frame = store::IngressFrameRow {
                     frame_id: format!("local:{}", msg_id_for_recipient),
-                    transport: "local".to_string(),
+                    transport: "local_direct".to_string(),
                     endpoint_id: Some(endpoint_id.clone()),
                     agent_ref: Some(agent_ref.clone()),
                     transport_msg_id: Some(msg_id_for_recipient),
@@ -145,11 +141,11 @@ async fn run_local(
             .await?;
     } else {
         // Different DB: open recipient's DB with WAL + busy_timeout=10000
-        let recipient_conn = tokio::task::spawn_blocking(move || -> Result<()> {
+        tokio::task::spawn_blocking(move || -> Result<()> {
             let conn = open_recipient_db(&recipient_db_path_clone)?;
             let frame = store::IngressFrameRow {
                 frame_id: format!("local:{}", msg_id_for_recipient),
-                transport: "local".to_string(),
+                transport: "local_direct".to_string(),
                 endpoint_id: Some(endpoint_id),
                 agent_ref: Some(agent_ref),
                 transport_msg_id: Some(msg_id_for_recipient),
@@ -168,7 +164,6 @@ async fn run_local(
         })
         .await
         .map_err(|e| anyhow::anyhow!("db task panicked: {e}"))??;
-        let _ = recipient_conn;
     }
 
     println!("Sent (local)");
@@ -187,28 +182,24 @@ fn open_recipient_db(path: &std::path::Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Insert a local-transport message row. Uses INSERT OR IGNORE with msg_id as dedup key.
-fn insert_local_message(
+/// Insert the sender-side outbox copy for a local-direct delivery.
+fn insert_outbound_local_copy(
     conn: &Connection,
-    nostr_id: &str,
     msg_id: &str,
-    direction: Direction,
     sender: &str,
     recipient: &str,
     content: &str,
-    delivery_status: DeliveryStatus,
-    read_status: ReadStatus,
     created_at: &str,
     received_at: &str,
 ) -> Result<bool> {
     let msg_row = store::MessageRow {
-        nostr_id: nostr_id.to_string(),
-        direction,
+        nostr_id: msg_id.to_string(),
+        direction: Direction::Out,
         sender: sender.to_string(),
         recipient: recipient.to_string(),
         content: content.to_string(),
-        delivery_status,
-        read_status,
+        delivery_status: DeliveryStatus::Delivered,
+        read_status: ReadStatus::Read,
         created_at: created_at.to_string(),
         received_at: received_at.to_string(),
         sender_alias: None,
@@ -217,7 +208,7 @@ fn insert_local_message(
         msg_id: Some(msg_id.to_string()),
         thread_id: None,
         reply_to: None,
-        transport: Some("local".to_string()),
+        transport: Some("local_direct".to_string()),
         transport_msg_id: Some(msg_id.to_string()),
         source_frame_id: None,
     };

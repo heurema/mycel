@@ -122,7 +122,7 @@ pub struct MessageMeta {
     pub thread_id: Option<String>,
     /// Parent `msg_id` for threaded replies (always references msg_id, not transport_msg_id).
     pub reply_to: Option<String>,
-    /// Transport used to deliver the message ("nostr" or "local").
+    /// Transport used to deliver the message ("nostr", "local_direct", etc.).
     pub transport: Option<String>,
     /// Per-transport copy identifier (Nostr event ID or local row ID).
     pub transport_msg_id: Option<String>,
@@ -133,6 +133,7 @@ pub struct MessageMeta {
 /// A single content part of an Envelope v2 message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
+#[allow(clippy::enum_variant_names)] // Wire-format names intentionally carry the Part suffix.
 pub enum Part {
     /// Plain text content part.
     #[serde(rename = "text")]

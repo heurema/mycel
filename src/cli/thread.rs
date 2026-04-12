@@ -215,13 +215,15 @@ pub async fn send_thread_message(
     // Fan-out via NIP-17 multi_recipient_gift_wrap
     let event_ids = mycel_nostr::multi_recipient_gift_wrap(
         &keys,
-        &member_pubkeys,
-        &env_json,
         &relay_urls,
-        thread_id,
-        &msg_id,
-        subject,
-        reply_event_id.as_deref(),
+        mycel_nostr::ThreadRumorSpec {
+            members: &member_pubkeys,
+            rumor_content: &env_json,
+            thread_id,
+            msg_id: &msg_id,
+            subject,
+            reply_to_event_id: reply_event_id.as_deref(),
+        },
         timeout,
     )
     .await?;

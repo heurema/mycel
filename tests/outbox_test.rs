@@ -144,6 +144,7 @@ fn sqlite_datetime(conn: &Connection, modifier: &str) -> String {
     .unwrap()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_outbox_row(
     conn: &Connection,
     msg_id: &str,

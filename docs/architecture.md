@@ -1,7 +1,7 @@
 # mycel Architecture
 
 Date: 2026-04-11  
-Status: current runtime + accepted target boundary
+Status: current runtime + boundary-core implementation
 
 `mycel` is an encrypted async **mailbox** for AI CLI agents. The product shape stays the same:
 
@@ -81,9 +81,9 @@ These remain the normalized read model:
 - `sync_state`
 - `outbox`
 
-### Planned ingress layer
+### Ingress layer
 
-These are the additive pieces required by the accepted boundary:
+These additive pieces are now part of the runtime:
 
 - `ingress_frames` — raw inbound artifacts before auth/trust/dedup/materialization
 - `messages.source_frame_id` — traceability from normalized message to source frame
@@ -94,18 +94,20 @@ These are the additive pieces required by the accepted boundary:
 What already exists in code:
 
 - Envelope v2 fields: `msg_id`, `thread_id`, `reply_to`, `role`, `parts`
-- local send + `self` alias
-- Nostr send/receive path
+- router seam in `core/router` + store-backed directory in `core/directory`
+- `ingress_frames`, `messages.source_frame_id`, and shared `core/ingest`
+- local send landing signed envelope JSON in recipient ingress and verifying signatures during ingest
+- Nostr sync landing raw frames in ingress before normalization
+- persistent `agent_endpoints` directory for local + cached/discovered Nostr endpoints
 - thread commands and normalized thread metadata in `messages`
 - trust tiers, outbox, ACK, sync logic
 
-What is still structurally incomplete:
+What is still intentionally pending:
 
-- `cli/send.rs` still branches directly into local-vs-Nostr delivery
-- `src/transport/mod.rs` is still Nostr-shaped (`recipient: PublicKey`, `since: u64`)
-- local send signs envelopes but materializes `messages` rows directly instead of landing signed frames in ingress
-- `sync.rs` still parses/validates and writes final rows directly rather than emitting ingress frames
-- routing inputs are split across `contacts`, `[local.agents]`, and transport-specific code paths
+- `src/transport/mod.rs` still exposes transitional, Nostr-shaped traits and is not yet the runtime seam
+- `local-gateway` does not exist yet
+- A2A and MCP adapters do not exist yet
+- local aliases are still config-authoritative even though runtime resolution now passes through `agent_endpoints`
 
 ## Target module split
 

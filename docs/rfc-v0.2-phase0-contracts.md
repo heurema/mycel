@@ -9,6 +9,11 @@ Quorum: Gemini APPROVE@0.95, Codex BLOCK→fixed (signature scope + msg_id type)
 This RFC defines the contracts that must be frozen before any v0.2 code is written.
 All contracts are specification-level — no implementation is prescribed.
 
+> Archival note (2026-04-12): this RFC still defines message-level contracts such as `msg_id`,
+> `reply_to`, envelope semantics, and local authenticity requirements. Transport boundary,
+> routing, ingress, and adapter layering now live in
+> `docs/rfc-local-first-transport-boundary.md`.
+
 ## Contract 1: Message Identity
 
 ### Problem

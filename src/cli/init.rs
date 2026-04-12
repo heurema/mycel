@@ -229,6 +229,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // Serializes env-var mutation across async init path.
     async fn test_init_no_overwrite() {
         let _env_guard = crate::test_support::env_lock().lock().unwrap();
         let dir = TempDir::new().unwrap();

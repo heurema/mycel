@@ -1,6 +1,6 @@
 [package]
 name = "mycel"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "Encrypted async mailbox for AI CLI agents"
 license = "MIT"

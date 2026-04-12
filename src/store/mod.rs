@@ -490,6 +490,7 @@ pub fn insert_ack(conn: &Connection, ack: &AckRow) -> Result<bool> {
 }
 
 /// Return all ACK rows in 'pending' status.
+#[allow(dead_code)] // ACK sender loop is wired in later release work.
 pub fn get_pending_acks(conn: &Connection) -> Result<Vec<AckRow>> {
     let mut stmt = conn.prepare(
         "SELECT msg_id, ack_sender, ack_status, created_at, sent_at
@@ -799,7 +800,7 @@ pub fn insert_message_local(
             meta.msg_id.as_deref(),
             meta.thread_id.as_deref(),
             meta.reply_to.as_deref(),
-            meta.transport.as_deref().unwrap_or("local"),
+            meta.transport.as_deref().unwrap_or("local_direct"),
             meta.transport_msg_id.as_deref(),
             meta.source_frame_id.as_deref(),
         ],
@@ -1380,6 +1381,7 @@ pub async fn flush_outbox(db: &Db, keys: &Keys, relay_urls: Vec<String>) -> Resu
 
 /// Return (nostr_id_hex, unix_timestamp) for all inbound messages.
 /// Used to build the negentropy known-items set for NIP-77 reconciliation.
+#[allow(dead_code)] // Kept for targeted QA coverage and future negentropy reuse.
 pub fn get_known_nostr_ids(conn: &Connection) -> Result<Vec<(String, u64)>> {
     let mut stmt = conn.prepare(
         "SELECT nostr_id, COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0) FROM messages WHERE direction = 'in'"

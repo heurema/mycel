@@ -314,10 +314,10 @@ fn get_passphrase(prompt: &str) -> Result<Zeroizing<String>> {
     }
 
     // 2. Keychain-cached passphrase (non-interactive agent path)
-    if let Ok(entry) = keyring::Entry::new(SERVICE, PASSPHRASE_ACCOUNT) {
-        if let Ok(p) = entry.get_password() {
-            return Ok(Zeroizing::new(p));
-        }
+    if let Ok(entry) = keyring::Entry::new(SERVICE, PASSPHRASE_ACCOUNT)
+        && let Ok(p) = entry.get_password()
+    {
+        return Ok(Zeroizing::new(p));
     }
 
     // 3. Interactive TTY prompt (human path)

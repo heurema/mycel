@@ -29,7 +29,7 @@
 
 ---
 
-## Current priority — Local-first transport boundary
+## Current release target — v0.4.x boundary core
 
 Authoritative docs:
 
@@ -37,7 +37,7 @@ Authoritative docs:
 - Architecture: `docs/architecture.md`
 - Plan: `docs/plan-local-agent-mesh.md`
 
-This is the next architectural cleanup, not a product pivot. Product direction stays:
+This release is the transport-boundary cleanup, not a product pivot. Product direction stays:
 
 - mailbox-first
 - sync-on-command
@@ -45,40 +45,32 @@ This is the next architectural cleanup, not a product pivot. Product direction s
 - `nostr` for remote async delivery
 - A2A/MCP only as adapters around the core
 
-### Phase 1 — Freeze the boundary
+### Implemented for v0.4.x
 
 - [x] Accept the local-first transport-boundary RFC
 - [x] Align architecture, roadmap, glossary, and planning docs
-- [ ] Route `send` / `thread send` through a router abstraction instead of transport-specific CLI branches
-- [ ] Split transport abstractions into outbound delivery vs inbound collection
+- [x] Add a router/directory seam for direct send paths
+- [x] Split transport abstractions into outbound delivery vs inbound collection
+- [x] Add `ingress_frames`
+- [x] Add `messages.source_frame_id`
+- [x] Implement shared `ingest()` for parse/auth/trust/dedup/materialization
+- [x] Make inbox/watch drain pending ingress before rendering normalized messages
+- [x] Change `local-direct` to persist signed envelope JSON as an ingress frame
+- [x] Verify Schnorr signatures on the recipient side during ingest
+- [x] Keep `msg_id` stable across sender outbox copy and recipient inbox copy
+- [x] Move Nostr receive onto the same raw-ingress path
+- [x] Keep NIP-59 auth data in frame metadata instead of normalized mailbox rows
+- [x] Add `agent_endpoints`
+- [x] Backfill config-backed local aliases into the endpoint directory at runtime
+- [x] Separate trust (`contacts`) from endpoint resolution (`agent_endpoints` / router)
+- [x] Add tests for local signature verification, ingress behavior, and endpoint selection
 
-### Phase 2 — Add unified ingress
+### Remaining release polish before tagging v0.4.x
 
-- [ ] Add `ingress_frames`
-- [ ] Add `messages.source_frame_id`
-- [ ] Implement `ingest()` for parse/auth/trust/dedup/materialization
-- [ ] Make inbox/watch drain pending ingress before rendering normalized messages
-
-### Phase 3 — Fix local authenticity for real
-
-- [ ] Change `local-direct` to persist signed envelope JSON as an ingress frame
-- [ ] Verify Schnorr signatures on the recipient side during ingest
-- [ ] Keep `msg_id` stable across sender outbox copy and recipient inbox copy
-- [ ] Add regression tests for local signature verification and dedup
-
-### Phase 4 — Move Nostr onto the same ingress path
-
-- [ ] Change Nostr receive to emit raw ingress frames instead of final `messages` rows
-- [ ] Keep NIP-59 auth data in frame metadata, not in normalized mailbox rows
-- [ ] Reuse the same ingest path for thread metadata and trust-tier decisions
-- [ ] Add regression tests for cross-transport `msg_id` / `reply_to` invariants
-
-### Phase 5 — Add endpoint directory + router policy
-
-- [ ] Add `agent_endpoints`
-- [ ] Backfill local aliases from `[local.agents]`
-- [ ] Separate trust (`contacts`) from endpoint resolution (`agent_endpoints` / router)
-- [ ] Add tests for endpoint selection and route fallback rules
+- [x] Normalize canonical transport naming to `local_direct` while keeping legacy `local` as a compatibility alias during ingest
+- [x] Make the release baseline pass `cargo test`
+- [x] Make the release baseline pass `cargo clippy --all-targets --all-features -- -D warnings`
+- [x] Refresh README / public-facing release notes so the new boundary shows up in user-facing docs
 
 ### Phase 6 — Optional local fallback
 

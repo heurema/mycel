@@ -58,7 +58,7 @@ mycel inbox --json
 mycel doctor
 ```
 
-## Features (v0.3)
+## Features (v0.4)
 
 ### Reliable Delivery
 
@@ -85,19 +85,24 @@ Optional app-level ACK: when a recipient decrypts a message, they can send a rev
 enabled = true
 ```
 
-### Pluggable Transport
+### Transport-Neutral Core Boundary
 
-The transport layer is abstracted behind a `Transport` trait. Nostr is the default; NATS JetStream and Matrix backends can be added without changing application code.
+Local and Nostr delivery now land in a shared ingress pipeline before mailbox materialization:
+
+- router + endpoint directory choose the delivery path
+- transports land raw frames in ingress
+- one `ingest()` path performs auth, trust, dedup, and normalization
+- normalized inbox state stays transport-neutral
 
 ## Local Transport
 
-Same-machine agents communicate directly via SQLite — no relay needed.
+Same-machine agents communicate directly via SQLite/WAL — no relay needed.
 
 ```bash
 # Send to yourself (cross-session memory)
 mycel send self "deployment finished, 3 alerts resolved"
 
-# Send to a local agent (direct DB write)
+# Send to a local agent (local-direct delivery)
 mycel send --local codex "review this diff"
 ```
 
@@ -108,7 +113,7 @@ Configure local agents in `config.toml`:
 codex = { pubkey = "abc...", db = "~/.local/share/mycel-codex/mycel.db" }
 ```
 
-Messages are signed with Schnorr (secp256k1) for authenticity.
+Messages are signed with Schnorr (secp256k1) and verified on the recipient side during ingest.
 
 ## Group Threads
 

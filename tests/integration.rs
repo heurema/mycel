@@ -19,6 +19,7 @@ use uuid::Uuid;
 // Outbox schema (outbox table for store-and-retry reliability tests)
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 const OUTBOX_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS outbox (
     msg_id          TEXT PRIMARY KEY,
@@ -85,7 +86,8 @@ CREATE TABLE IF NOT EXISTS threads (
 PRAGMA user_version = 2;
 ";
 
-/// INSERT OR IGNORE using msg_id as dedup key (local transport).
+/// INSERT OR IGNORE using msg_id as dedup key (local-direct transport).
+#[allow(clippy::too_many_arguments)]
 fn insert_local_msg(
     conn: &Connection,
     nostr_id: &str,
@@ -112,8 +114,8 @@ fn insert_local_msg(
 // Local transport: send-to-self tests
 // ---------------------------------------------------------------------------
 
-/// send self via local transport: message appears in DB with direction=out,
-/// transport=local. Validates UUIDv7 msg_id, Envelope v2 signing, INSERT OR IGNORE dedup.
+/// send self via local-direct transport: message appears in DB with direction=out,
+/// transport=local_direct. Validates UUIDv7 msg_id, Envelope v2 signing, INSERT OR IGNORE dedup.
 #[test]
 fn test_local_send_self() {
     // Generate a keypair for the sender (self)
@@ -128,7 +130,7 @@ fn test_local_send_self() {
     let msg_id = Uuid::now_v7().to_string();
     let message = "context summary for next session";
 
-    // Write outbound copy (direction=out, transport=local)
+    // Write outbound copy (direction=out, transport=local_direct)
     let inserted_out = insert_local_msg(
         &conn,
         &msg_id,
@@ -137,11 +139,11 @@ fn test_local_send_self() {
         &sender_hex,
         message,
         &msg_id,
-        "local",
+        "local_direct",
     );
     assert!(inserted_out, "outbound copy must be inserted");
 
-    // Write inbound copy (direction=in, transport=local) using a distinct nostr_id
+    // Write inbound copy (direction=in, transport=local_direct) using a distinct nostr_id
     let inbound_nostr_id = format!("{}-in", msg_id);
     let inbound_msg_id = format!("{}-inbound", msg_id);
     let inserted_in = insert_local_msg(
@@ -152,11 +154,11 @@ fn test_local_send_self() {
         &sender_hex,
         message,
         &inbound_msg_id,
-        "local",
+        "local_direct",
     );
     assert!(inserted_in, "inbound copy must be inserted");
 
-    // Verify: outbound row exists with transport=local
+    // Verify: outbound row exists with transport=local_direct
     let (stored_direction, stored_transport): (String, String) = conn
         .query_row(
             "SELECT direction, transport FROM messages WHERE nostr_id = ?1",
@@ -165,7 +167,7 @@ fn test_local_send_self() {
         )
         .unwrap();
     assert_eq!(stored_direction, "out");
-    assert_eq!(stored_transport, "local");
+    assert_eq!(stored_transport, "local_direct");
 
     // Verify: inbound row exists with direction=in
     let in_direction: String = conn
@@ -201,7 +203,7 @@ fn test_local_dedup_msg_id() {
         "recipient",
         "hello",
         &msg_id,
-        "local",
+        "local_direct",
     );
     assert!(first, "first insert must succeed");
 
@@ -214,7 +216,7 @@ fn test_local_dedup_msg_id() {
         "recipient",
         "hello",
         &msg_id,
-        "local",
+        "local_direct",
     );
     assert!(!second, "duplicate msg_id must be silently ignored");
 
@@ -305,16 +307,16 @@ async fn test_integration_send_receive_roundtrip() {
     // Unwrap and verify content
     let mut found = false;
     for event in events {
-        if let Ok(unwrapped) = UnwrappedGift::from_gift_wrap(&receiver_keys, &event).await {
-            if unwrapped.rumor.content.contains(&unique_tag) {
-                assert_eq!(
-                    unwrapped.sender,
-                    sender_keys.public_key(),
-                    "sender public key must match"
-                );
-                found = true;
-                break;
-            }
+        if let Ok(unwrapped) = UnwrappedGift::from_gift_wrap(&receiver_keys, &event).await
+            && unwrapped.rumor.content.contains(&unique_tag)
+        {
+            assert_eq!(
+                unwrapped.sender,
+                sender_keys.public_key(),
+                "sender public key must match"
+            );
+            found = true;
+            break;
         }
     }
 
@@ -339,6 +341,7 @@ fn open_mem() -> Connection {
 }
 
 /// Helper: insert a thread message row with full meta.
+#[allow(clippy::too_many_arguments)]
 fn insert_thread_msg(
     conn: &Connection,
     nostr_id: &str,

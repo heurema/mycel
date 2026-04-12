@@ -72,6 +72,15 @@ fn add_tag(builder: EventBuilder, kind_str: &str, value: &str) -> EventBuilder {
     builder.tag(Tag::custom(TagKind::custom(kind_str), [value]))
 }
 
+pub struct ThreadRumorSpec<'a> {
+    pub members: &'a [String],
+    pub rumor_content: &'a str,
+    pub thread_id: &'a str,
+    pub msg_id: &'a str,
+    pub subject: Option<&'a str>,
+    pub reply_to_event_id: Option<&'a str>,
+}
+
 /// Build and publish a NIP-17 multi-recipient Kind 14 (ChatMessage) rumor wrapped for each
 /// member individually (Gift Wrap Kind 1059) plus a self-copy.
 ///
@@ -89,13 +98,8 @@ fn add_tag(builder: EventBuilder, kind_str: &str, value: &str) -> EventBuilder {
 /// an error for one member does not abort others.
 pub async fn multi_recipient_gift_wrap(
     keys: &Keys,
-    members: &[String],
-    rumor_content: &str,
     relay_urls: &[String],
-    thread_id: &str,
-    msg_id: &str,
-    subject: Option<&str>,
-    reply_to_event_id: Option<&str>,
+    spec: ThreadRumorSpec<'_>,
     timeout: std::time::Duration,
 ) -> Result<std::collections::HashMap<String, String>> {
     use std::collections::HashMap;
@@ -103,31 +107,31 @@ pub async fn multi_recipient_gift_wrap(
     // Build the Kind 14 (ChatMessage) unsigned rumor with all tags
     let sender_pk = keys.public_key();
 
-    let mut builder = EventBuilder::new(Kind::ChatMessage, rumor_content);
+    let mut builder = EventBuilder::new(Kind::ChatMessage, spec.rumor_content);
 
     // p-tags for all thread members
-    for member_hex in members {
+    for member_hex in spec.members {
         if let Ok(pk) = PublicKey::from_hex(member_hex) {
             builder = builder.tag(Tag::public_key(pk));
         }
     }
 
     // subject tag (first message or rename)
-    if let Some(subj) = subject {
+    if let Some(subj) = spec.subject {
         builder = builder.tag(Tag::custom(TagKind::Subject, [subj]));
     }
 
     // e-tag for reply chain (parent NIP-17 event ID)
-    if let Some(reply_event_id) = reply_to_event_id {
-        if let Ok(eid) = EventId::from_hex(reply_event_id) {
-            builder = builder.tag(Tag::event(eid));
-        }
+    if let Some(reply_event_id) = spec.reply_to_event_id
+        && let Ok(eid) = EventId::from_hex(reply_event_id)
+    {
+        builder = builder.tag(Tag::event(eid));
     }
 
     // Custom mycel tags (inside encrypted rumor, invisible to relays)
     // add_tag wraps Tag::custom with a custom TagKind string
-    builder = add_tag(builder, "mycel-thread-id", thread_id);
-    builder = add_tag(builder, "mycel-msg-id", msg_id);
+    builder = add_tag(builder, "mycel-thread-id", spec.thread_id);
+    builder = add_tag(builder, "mycel-msg-id", spec.msg_id);
 
     let _rumor: UnsignedEvent = builder.build(sender_pk);
 
@@ -137,29 +141,29 @@ pub async fn multi_recipient_gift_wrap(
     let mut event_ids: HashMap<String, String> = HashMap::new();
 
     // Fan-out: wrap and publish for each member individually
-    for member_hex in members {
+    for member_hex in spec.members {
         let pk = match PublicKey::from_hex(member_hex) {
             Ok(pk) => pk,
             Err(_) => continue,
         };
 
         // Re-build with all tags for this recipient's copy
-        let mut b2 = EventBuilder::new(Kind::ChatMessage, rumor_content);
-        for m in members {
+        let mut b2 = EventBuilder::new(Kind::ChatMessage, spec.rumor_content);
+        for m in spec.members {
             if let Ok(mpk) = PublicKey::from_hex(m) {
                 b2 = b2.tag(Tag::public_key(mpk));
             }
         }
-        if let Some(subj) = subject {
+        if let Some(subj) = spec.subject {
             b2 = b2.tag(Tag::custom(TagKind::Subject, [subj]));
         }
-        if let Some(reply_event_id) = reply_to_event_id {
-            if let Ok(eid) = EventId::from_hex(reply_event_id) {
-                b2 = b2.tag(Tag::event(eid));
-            }
+        if let Some(reply_event_id) = spec.reply_to_event_id
+            && let Ok(eid) = EventId::from_hex(reply_event_id)
+        {
+            b2 = b2.tag(Tag::event(eid));
         }
-        b2 = add_tag(b2, "mycel-thread-id", thread_id);
-        b2 = add_tag(b2, "mycel-msg-id", msg_id);
+        b2 = add_tag(b2, "mycel-thread-id", spec.thread_id);
+        b2 = add_tag(b2, "mycel-msg-id", spec.msg_id);
         let member_rumor: UnsignedEvent = b2.build(sender_pk);
 
         match tokio::time::timeout(
