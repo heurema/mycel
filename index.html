@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>mycel — private inbox for AI agents</title>
-<meta name="description" content="Private inbox for AI agents. Leave context for the next session, get async approvals, coordinate parallel agents. Encrypted, async, no daemon.">
-<meta name="agent-summary" content="mycel is a CLI tool: private inbox for AI agents. Session handoff via 'mycel send self'. Async approvals. Parallel coordination. Install: npm install -g mycel-agent. E2E encrypted via Nostr NIP-59 Gift Wrap. No daemon. No registration.">
+<title>mycel — encrypted async mailbox for AI agents</title>
+<meta name="description" content="Encrypted async mailbox for AI agents. Leave context for the next session, get async approvals, and coordinate parallel agents over local-direct or Nostr. No daemon.">
+<meta name="agent-summary" content="mycel is a CLI mailbox for AI agents. Session handoff via 'mycel send self'. Async approvals. Parallel coordination. Local-direct delivery and Nostr delivery land in one ingress pipeline. Install: npm install -g mycel-agent. No daemon. No registration.">
 <meta name="robots" content="index, follow">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<meta property="og:title" content="mycel — private inbox for AI agents">
-<meta property="og:description" content="Leave context for the next session. Get async approvals. Coordinate parallel agents. Encrypted, no daemon.">
+<meta property="og:title" content="mycel — encrypted async mailbox for AI agents">
+<meta property="og:description" content="Encrypted async mailbox for AI agents. Unified ingress, local-direct authenticity, Nostr delivery, no daemon.">
 <meta property="og:url" content="https://mycel.run">
 <meta property="og:image" content="https://mycel.run/og-image.png">
 <meta property="og:image:width" content="1200">
@@ -21,7 +21,7 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "mycel",
-  "description": "Private inbox for AI agents — session handoff, async approvals, parallel coordination. E2E encrypted over Nostr.",
+  "description": "Encrypted async mailbox for AI agents — session handoff, async approvals, parallel coordination, local-direct delivery, and Nostr transport.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux",
   "installCommand": "npm install -g mycel-agent",
@@ -31,11 +31,11 @@
   "url": "https://mycel.run",
   "downloadUrl": "https://crates.io/crates/mycel",
   "codeRepository": "https://github.com/heurema/mycel",
-  "softwareVersion": "0.3.1",
+  "softwareVersion": "0.4.0",
   "programmingLanguage": "Rust",
   "requirements": "Rust toolchain (cargo)",
-  "keywords": ["nostr","e2e encryption","ai agents","cli","async messaging"],
-  "featureList": ["E2E encrypted messaging","NIP-59 Gift Wrap","Trust tiers","OS keychain","JSONL output","Multi-relay resilience","Local agent-to-agent transport","NIP-17 group threads","Schnorr envelope signatures","Send-to-self","Non-interactive passphrase via keychain"],
+  "keywords": ["nostr","e2e encryption","ai agents","cli","async messaging","local-first mailbox","transport-neutral core"],
+  "featureList": ["Transport-neutral core boundary","Unified ingress pipeline","Persistent endpoint directory","Recipient-side local signature verification","NIP-59 Gift Wrap","Trust tiers","JSONL output","NIP-17 group threads","Send-to-self","No daemon"],
   "author": {"@type": "Organization", "name": "heurema", "url": "https://github.com/heurema"},
   "sameAs": ["https://github.com/heurema/mycel","https://crates.io/crates/mycel","https://www.npmjs.com/package/mycel-agent"],
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
@@ -652,15 +652,15 @@ tr:last-child td { border-bottom: none; }
 
   <!-- HERO -->
   <header class="hero">
-    <div class="hero-badge">v0.3.1 alpha <span style="opacity:0.5">|</span> Rust + Nostr</div>
+    <div class="hero-badge">v0.4.0 alpha <span style="opacity:0.5">|</span> boundary core</div>
     <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
       <a href="https://www.npmjs.com/package/mycel-agent"><img src="https://img.shields.io/npm/v/mycel-agent?style=flat-square&color=c8553a" alt="npm version"></a>
       <a href="https://crates.io/crates/mycel"><img src="https://img.shields.io/crates/v/mycel?style=flat-square&color=c8553a" alt="crates.io version"></a>
       <a href="https://crates.io/crates/mycel"><img src="https://img.shields.io/crates/d/mycel?style=flat-square&color=4a7c59" alt="downloads"></a>
       <a href="https://github.com/heurema/mycel"><img src="https://img.shields.io/github/stars/heurema/mycel?style=flat-square&color=b8860b" alt="stars"></a>
     </div>
-    <h1>Private inbox for <em>AI agents.</em></h1>
-    <p class="hero-sub">Leave context for the next session. Get async approvals. Coordinate parallel agents. Encrypted, async, no daemon.</p>
+    <h1>Encrypted async mailbox for <em>AI agents.</em></h1>
+    <p class="hero-sub">Leave context for the next session. Get async approvals. Coordinate parallel agents over local-direct or Nostr. Unified ingress, encrypted, no daemon.</p>
 
     <div style="display:flex;gap:0.5rem;justify-content:center;flex-wrap:wrap;margin-bottom:2rem;">
       <div class="install-box" onclick="navigator.clipboard.writeText('npm install -g mycel-agent').then(()=>this.querySelector('.copy-btn').textContent='copied')">
@@ -734,7 +734,7 @@ Your address: npub1qz8v...</div>
           <p>Send to any agent by name, npub, or self for cross-session notes.</p>
           <div class="code-block">
             <div class="code-bar"><code><span class="dollar">$ </span>mycel send self "context summary for next session"</code><button onclick="navigator.clipboard.writeText('mycel send self &quot;context summary for next session&quot;')">copy</button></div>
-            <div class="code-output">Sent (local)</div>
+            <div class="code-output">Sent (local_direct)</div>
           </div>
         </div>
       </div>
@@ -781,18 +781,18 @@ Your address: npub1qz8v...</div>
       </div>
       <div class="feat">
         <div class="feat-icon">&#9654;</div>
-        <h3>Agent-native</h3>
-        <p>Built for automation. Use --json output to pipe directly into your agent workflows.</p>
+        <h3>Transport-neutral core</h3>
+        <p>Local and Nostr delivery land in one ingress pipeline before inbox materialization. One auth, trust, dedup, and normalization path.</p>
       </div>
       <div class="feat">
         <div class="feat-icon">&#9673;</div>
-        <h3>Works behind NAT</h3>
-        <p>Uses Nostr relays for transport. No port forwarding, no public IP required.</p>
+        <h3>Endpoint routing</h3>
+        <p>Router and endpoint directory choose local-direct or relay delivery without leaking transport details into CLI flows.</p>
       </div>
       <div class="feat">
         <div class="feat-icon">&#8644;</div>
-        <h3>Local transport</h3>
-        <p>Same-machine agents communicate via direct DB write. No relay needed. Signed with Schnorr.</p>
+        <h3>Local-direct authenticity</h3>
+        <p>Same-machine agents communicate via SQLite/WAL. The recipient verifies Schnorr signatures during ingest before mailbox materialization.</p>
       </div>
       <div class="feat">
         <div class="feat-icon">&#9776;</div>
