@@ -31,7 +31,7 @@
   "url": "https://mycel.run",
   "downloadUrl": "https://crates.io/crates/mycel",
   "codeRepository": "https://github.com/heurema/mycel",
-  "softwareVersion": "0.4.0",
+  "softwareVersion": "0.4.1",
   "programmingLanguage": "Rust",
   "requirements": "Rust toolchain (cargo)",
   "keywords": ["nostr","e2e encryption","ai agents","cli","async messaging","local-first mailbox","transport-neutral core"],
@@ -652,7 +652,7 @@ tr:last-child td { border-bottom: none; }
 
   <!-- HERO -->
   <header class="hero">
-    <div class="hero-badge">v0.4.0 alpha <span style="opacity:0.5">|</span> boundary core</div>
+    <div class="hero-badge">v0.4.1 alpha <span style="opacity:0.5">|</span> agent contract</div>
     <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
       <a href="https://www.npmjs.com/package/mycel-agent"><img src="https://img.shields.io/npm/v/mycel-agent?style=flat-square&color=c8553a" alt="npm version"></a>
       <a href="https://crates.io/crates/mycel"><img src="https://img.shields.io/crates/v/mycel?style=flat-square&color=c8553a" alt="crates.io version"></a>
@@ -747,15 +747,7 @@ Your address: npub1qz8v...</div>
           <p>Fetch and decrypt messages. Use --json for agent consumption.</p>
           <div class="code-block">
             <div class="code-bar"><code><span class="dollar">$ </span>mycel inbox --json</code><button onclick="navigator.clipboard.writeText('mycel inbox --json')">copy</button></div>
-            <div class="code-output">[
-  {
-    "from": "npub1abc...",
-    "alias": "alice",
-    "trust": "KNOWN",
-    "message": "PR review done.",
-    "timestamp": 1709847600
-  }
-]</div>
+            <div class="code-output">{"v":2,"msg_id":"019de95f...","transport":"nostr","transport_msg_id":"7f3c...","source_frame_id":"nostr:7f3c...","from":"npub1abc...","from_hex":"f4a1...","alias":"alice","trust":"known","thread_id":null,"reply_to":null,"content":"PR review done.","created_at":"2026-05-03T09:00:00Z","received_at":"2026-05-03T09:00:04Z","read_status":"unread","delivery_status":"received"}</div>
           </div>
         </div>
       </div>

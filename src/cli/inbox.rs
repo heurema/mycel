@@ -61,62 +61,63 @@ pub async fn run(json: bool, all: bool, local: bool) -> Result<()> {
     } else {
         vec![TrustTier::Known]
     };
-    let messages = db
-        .run(move |conn| store::get_messages(conn, Direction::In, &trust_filter))
-        .await?;
-    display_messages(&messages, json, new_count)?;
+    if json {
+        let messages = db
+            .run(move |conn| store::get_messages_with_meta(conn, Direction::In, &trust_filter))
+            .await?;
+        display_json_messages(&messages)?;
+    } else {
+        let messages = db
+            .run(move |conn| store::get_messages(conn, Direction::In, &trust_filter))
+            .await?;
+        display_messages(&messages, new_count);
+    }
 
     Ok(())
 }
 
-/// Send ACK records for newly received messages when config.ack.enabled is true.
-/// Stores a pending AckRow in the local acks table for each new message received.
-/// ACK sending over the wire is handled by the outbox flush cycle.
+/// Record local ACK rows for newly received v2 messages when config.ack.enabled is true.
+///
+/// TODO(v0.4.x): build an Envelope v2 AckPart and route it back to the original
+/// sender over Nostr. For v0.4.1 this only records local ACK state keyed by the
+/// original logical msg_id; there is no reverse Gift Wrap sender loop yet.
 async fn send_ack(db: &store::Db, _keys: &Keys, _relay_urls: &[String], my_hex: &str) {
     let my_hex = my_hex.to_string();
     if let Err(e) = db
-        .run(move |conn| {
-            // Get messages that were recently received (unread, inbound) to ACK
-            let msgs = store::get_messages(conn, Direction::In, &[TrustTier::Known])?;
-            for msg in &msgs {
-                // Only ACK messages that have a msg_id (v2 envelope)
-                // Use the nostr_id as fallback key for the ACK record
-                let ack_row = store::AckRow {
-                    msg_id: msg.nostr_id.clone(),
-                    ack_sender: my_hex.clone(),
-                    ack_status: AckStatus::Acknowledged,
-                    created_at: crate::envelope::now_iso8601(),
-                    sent_at: None,
-                };
-                // INSERT OR IGNORE — idempotent, config.ack.enabled guard above
-                let _ = store::insert_ack(conn, &ack_row);
-            }
-            Ok(())
-        })
+        .run(move |conn| record_local_ack_rows(conn, &my_hex))
         .await
     {
         tracing::warn!("send_ack: failed to record ACKs: {e}");
     }
 }
 
-fn display_messages(messages: &[store::MessageRow], json: bool, new_count: u64) -> Result<()> {
-    if json {
-        for msg in messages {
-            let npub_from = PublicKey::from_hex(&msg.sender)
-                .ok()
-                .and_then(|pk| pk.to_bech32().ok())
-                .unwrap_or_else(|| msg.sender.clone());
-            let line = serde_json::json!({
-                "v": 1,
-                "nostr_id": msg.nostr_id,
-                "from": npub_from,
-                "content": msg.content,
-                "ts": msg.created_at,
-                "status": msg.read_status.to_string(),
-            });
-            println!("{}", serde_json::to_string(&line)?);
-        }
-    } else if messages.is_empty() {
+fn record_local_ack_rows(conn: &rusqlite::Connection, my_hex: &str) -> Result<()> {
+    let msgs = store::get_messages_with_meta(conn, Direction::In, &[TrustTier::Known])?;
+    for row in &msgs {
+        let Some(msg_id) = row.meta.msg_id.as_deref().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let ack_row = store::AckRow {
+            msg_id: msg_id.to_string(),
+            ack_sender: my_hex.to_string(),
+            ack_status: AckStatus::Acknowledged,
+            created_at: crate::envelope::now_iso8601(),
+            sent_at: None,
+        };
+        let _ = store::insert_ack(conn, &ack_row)?;
+    }
+    Ok(())
+}
+
+fn display_json_messages(messages: &[store::MessageWithMetaRow]) -> Result<()> {
+    for msg in messages {
+        println!("{}", serde_json::to_string(&message_json_v2(msg))?);
+    }
+    Ok(())
+}
+
+fn display_messages(messages: &[store::MessageRow], new_count: u64) {
+    if messages.is_empty() {
         println!("No messages.");
     } else {
         if new_count > 0 {
@@ -129,7 +130,38 @@ fn display_messages(messages: &[store::MessageRow], json: bool, new_count: u64) 
             println!("[{}] {}: {}", ts, sender_display, content);
         }
     }
-    Ok(())
+}
+
+fn message_json_v2(row: &store::MessageWithMetaRow) -> serde_json::Value {
+    let msg = &row.message;
+    let from_npub = PublicKey::from_hex(&msg.sender)
+        .ok()
+        .and_then(|pk| pk.to_bech32().ok())
+        .unwrap_or_else(|| msg.sender.clone());
+    let transport = row
+        .meta
+        .transport
+        .clone()
+        .unwrap_or_else(|| "nostr".to_string());
+
+    serde_json::json!({
+        "v": 2,
+        "msg_id": row.meta.msg_id.as_deref(),
+        "transport": transport,
+        "transport_msg_id": row.meta.transport_msg_id.as_deref(),
+        "source_frame_id": row.meta.source_frame_id.as_deref(),
+        "from": from_npub,
+        "from_hex": msg.sender.as_str(),
+        "alias": msg.sender_alias.as_deref(),
+        "trust": row.trust_tier.to_string(),
+        "thread_id": row.meta.thread_id.as_deref(),
+        "reply_to": row.meta.reply_to.as_deref(),
+        "content": msg.content.as_str(),
+        "created_at": msg.created_at.as_str(),
+        "received_at": msg.received_at.as_str(),
+        "read_status": msg.read_status.to_string(),
+        "delivery_status": msg.delivery_status.to_string(),
+    })
 }
 
 fn sender_label(msg: &store::MessageRow) -> String {
@@ -247,18 +279,48 @@ mod tests {
     }
 
     #[test]
-    fn test_inbox_json_format() {
-        let line = serde_json::json!({
-            "v": 1,
-            "nostr_id": "abc123",
-            "from": "npub1test...",
-            "content": "hello",
-            "ts": "2026-03-20T00:00:00Z",
-            "status": "unread",
-        });
-        let serialized = serde_json::to_string(&line).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(parsed["v"], 1);
+    fn test_inbox_json_v2_format_includes_stable_contract_fields() {
+        let keys = Keys::generate();
+        let sender_hex = keys.public_key().to_hex();
+        let sender_npub = keys.public_key().to_bech32().unwrap();
+        let row = store::MessageWithMetaRow {
+            message: store::MessageRow {
+                nostr_id: "event-json".to_string(),
+                direction: Direction::In,
+                sender: sender_hex.clone(),
+                recipient: "recipient_hex".to_string(),
+                content: "hello json".to_string(),
+                delivery_status: DeliveryStatus::Received,
+                read_status: ReadStatus::Unread,
+                created_at: "2026-05-03T00:00:00Z".to_string(),
+                received_at: "2026-05-03T00:00:01Z".to_string(),
+                sender_alias: None,
+            },
+            meta: crate::types::MessageMeta {
+                msg_id: Some("019de95f-0000-7000-8000-000000000005".to_string()),
+                thread_id: None,
+                reply_to: None,
+                transport: Some("nostr".to_string()),
+                transport_msg_id: Some("event-json".to_string()),
+                source_frame_id: None,
+            },
+            trust_tier: TrustTier::Known,
+        };
+
+        let parsed = message_json_v2(&row);
+        assert_eq!(parsed["v"], 2);
+        assert_eq!(parsed["msg_id"], "019de95f-0000-7000-8000-000000000005");
+        assert_eq!(parsed["transport"], "nostr");
+        assert_eq!(parsed["thread_id"], serde_json::Value::Null);
+        assert_eq!(parsed["reply_to"], serde_json::Value::Null);
+        assert_eq!(parsed["source_frame_id"], serde_json::Value::Null);
+        assert_eq!(parsed["from"], sender_npub);
+        assert_eq!(parsed["from_hex"], sender_hex);
+        assert_eq!(parsed["alias"], serde_json::Value::Null);
+        assert_eq!(parsed["trust"], "known");
+        assert_eq!(parsed["read_status"], "unread");
+        assert_eq!(parsed["delivery_status"], "received");
+        assert!(parsed.as_object().unwrap().contains_key("transport_msg_id"));
     }
 
     #[test]
@@ -325,5 +387,51 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn test_record_local_ack_rows_uses_logical_msg_id_not_nostr_id() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::store::SCHEMA).unwrap();
+
+        let sender = "known_sender".to_string();
+        store::insert_contact(
+            &conn,
+            &store::ContactRow {
+                pubkey: sender.clone(),
+                alias: None,
+                trust_tier: TrustTier::Known,
+                added_at: "2026-05-03T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+        let msg = store::MessageRow {
+            nostr_id: "nostr-event-id".to_string(),
+            direction: Direction::In,
+            sender,
+            recipient: "recipient".to_string(),
+            content: "needs ack".to_string(),
+            delivery_status: DeliveryStatus::Received,
+            read_status: ReadStatus::Unread,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+            received_at: "2026-05-03T00:00:01Z".to_string(),
+            sender_alias: None,
+        };
+        let meta = crate::types::MessageMeta {
+            msg_id: Some("logical-msg-id".to_string()),
+            thread_id: None,
+            reply_to: None,
+            transport: Some("nostr".to_string()),
+            transport_msg_id: Some("nostr-event-id".to_string()),
+            source_frame_id: Some("nostr:nostr-event-id".to_string()),
+        };
+        store::insert_message_v2(&conn, &msg, &meta).unwrap();
+
+        record_local_ack_rows(&conn, "my_hex").unwrap();
+
+        let ack_msg_id: String = conn
+            .query_row("SELECT msg_id FROM acks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(ack_msg_id, "logical-msg-id");
     }
 }

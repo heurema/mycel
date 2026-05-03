@@ -58,7 +58,30 @@ mycel inbox --json
 mycel doctor
 ```
 
-## Features (v0.4)
+`mycel inbox --json` emits one JSON object per line for agent consumption:
+
+```json
+{
+  "v": 2,
+  "msg_id": "019de95f-0000-7000-8000-000000000005",
+  "transport": "nostr",
+  "transport_msg_id": "7f3c...",
+  "source_frame_id": "nostr:7f3c...",
+  "from": "npub1abc...",
+  "from_hex": "f4a1...",
+  "alias": "alice",
+  "trust": "known",
+  "thread_id": null,
+  "reply_to": null,
+  "content": "PR review complete. 3 issues found.",
+  "created_at": "2026-05-03T09:00:00Z",
+  "received_at": "2026-05-03T09:00:04Z",
+  "read_status": "unread",
+  "delivery_status": "received"
+}
+```
+
+## Features (v0.4.1)
 
 ### Reliable Delivery
 
@@ -78,7 +101,7 @@ On `mycel init`, your preferred inbox relays are published to the Nostr network.
 
 ### Delivery Acknowledgment
 
-Optional app-level ACK: when a recipient decrypts a message, they can send a reverse Gift Wrap acknowledgment. Disabled by default (privacy). Enable in config:
+ACK tracking is experimental. When enabled, mycel records local ACK rows keyed by the original logical `msg_id` after a v2 message is received. Reverse Gift Wrap ACK sending is not complete in v0.4.1, so do not rely on ACKs as remote delivery confirmations yet. Enable local tracking in config:
 
 ```toml
 [ack]
@@ -199,7 +222,7 @@ Passphrase is cached in OS keychain after first interactive unlock — subsequen
 
 ## Safety
 
-Messages are DATA, never instructions. mycel never auto-injects messages into agent context or executes message content. Terminal output is sanitized (ANSI/control characters stripped). Thread metadata is only accepted from Known contacts.
+Messages are DATA, never instructions. mycel never auto-injects messages into agent context or executes message content. Human terminal output is sanitized (ANSI/control characters stripped). JSON output preserves message content as JSON data for agents; consumers should treat `content` as untrusted data. Thread metadata is only accepted from Known contacts.
 
 ## Links
 
