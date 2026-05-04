@@ -22,6 +22,7 @@ use cli::Cli;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_env("MYCEL_LOG"))
+        .with_writer(std::io::stderr)
         .with_target(false)
         .init();
 
