@@ -232,20 +232,10 @@ async fn run_nostr(
     let recipient_hex = endpoint.pubkey_hex;
     let recipient_pk = endpoint.public_key;
 
-    // 5. Build mycel envelope
-    let env = envelope::Envelope::new(
-        sender_hex.to_string(),
-        recipient_hex.clone(),
-        message.to_string(),
-    );
+    // 5. Build mycel Envelope v2 with a stable logical msg_id before transport wrap.
+    let env = build_remote_nostr_envelope(sender_hex, &recipient_hex, message);
     let envelope_json = serde_json::to_string(&env)?;
-
-    // Generate a msg_id for this outbound message
-    let msg_id = if env.msg_id.is_empty() {
-        uuid::Uuid::now_v7().to_string()
-    } else {
-        env.msg_id.clone()
-    };
+    let msg_id = env.msg_id.clone();
 
     // 5a. INSERT outbox row before network attempt (store-and-forward)
     let relay_urls_json = serde_json::to_string(&relay_urls)?;
@@ -328,6 +318,7 @@ async fn run_nostr(
 
     let (event_id, ok_count) = publish_result
         .map_err(|e| anyhow::anyhow!("{e} — relay unreachable; check your network connection"))?;
+    let event_id_hex = event_id.to_hex();
 
     let total = publish_relays.len();
     let failed = total.saturating_sub(ok_count);
@@ -341,7 +332,7 @@ async fn run_nostr(
 
     // 10. Store in messages table
     let msg_row = store::MessageRow {
-        nostr_id: event_id.to_hex(),
+        nostr_id: event_id_hex.clone(),
         direction: Direction::Out,
         sender: sender_hex.to_string(),
         recipient: recipient_hex,
@@ -352,7 +343,15 @@ async fn run_nostr(
         received_at: now,
         sender_alias: None,
     };
-    db.run(move |conn| store::insert_message(conn, &msg_row).map(|_| ()))
+    let meta = MessageMeta {
+        msg_id: Some(msg_id),
+        thread_id: None,
+        reply_to: None,
+        transport: Some("nostr".to_string()),
+        transport_msg_id: Some(event_id_hex),
+        source_frame_id: None,
+    };
+    db.run(move |conn| store::insert_message_v2(conn, &msg_row, &meta).map(|_| ()))
         .await?;
 
     // 11. Disconnect and print result
@@ -370,12 +369,38 @@ async fn run_nostr(
     Ok(())
 }
 
+fn build_remote_nostr_envelope(
+    sender_hex: &str,
+    recipient_hex: &str,
+    message: &str,
+) -> envelope::Envelope {
+    let msg_id = Uuid::now_v7().to_string();
+    build_remote_nostr_envelope_with_msg_id(msg_id, sender_hex, recipient_hex, message)
+}
+
+fn build_remote_nostr_envelope_with_msg_id(
+    msg_id: String,
+    sender_hex: &str,
+    recipient_hex: &str,
+    message: &str,
+) -> envelope::Envelope {
+    envelope::Envelope::new_v2(
+        msg_id,
+        sender_hex.to_string(),
+        recipient_hex.to_string(),
+        vec![Part::TextPart {
+            text: message.to_string(),
+        }],
+    )
+}
+
 fn now_iso8601() -> String {
     crate::envelope::now_iso8601()
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::envelope::validate_message_size;
     use crate::error::MAX_MESSAGE_SIZE;
 
@@ -391,5 +416,69 @@ mod tests {
         // but we test the size validation passes for empty (it's under the cap)
         assert!(validate_message_size("").is_ok());
         assert!(validate_message_size("   ").is_ok());
+    }
+
+    #[test]
+    fn remote_nostr_envelope_uses_v2_stable_msg_id() {
+        let env = build_remote_nostr_envelope_with_msg_id(
+            "019de95f-0000-7000-8000-000000000001".to_string(),
+            "sender_hex",
+            "recipient_hex",
+            "hello remote",
+        );
+
+        assert_eq!(env.v, 2);
+        assert_eq!(env.msg_id, "019de95f-0000-7000-8000-000000000001");
+        assert!(env.msg.is_empty(), "v2 remote send must not use legacy msg");
+        assert_eq!(env.parts.len(), 1);
+        assert!(
+            env.sig.is_none(),
+            "Nostr transport must not require local sig"
+        );
+        match &env.parts[0] {
+            Part::TextPart { text } => assert_eq!(text, "hello remote"),
+            _ => panic!("remote send must build a text part"),
+        }
+    }
+
+    #[test]
+    fn remote_outbox_envelope_json_msg_id_matches_row() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(store::SCHEMA).unwrap();
+
+        let env = build_remote_nostr_envelope_with_msg_id(
+            "019de95f-0000-7000-8000-000000000002".to_string(),
+            "sender_hex",
+            "recipient_hex",
+            "persist me",
+        );
+        let envelope_json = serde_json::to_string(&env).unwrap();
+        let row = store::OutboxRow {
+            msg_id: env.msg_id.clone(),
+            recipient_hex: "recipient_hex".to_string(),
+            envelope_json,
+            relay_urls: "[]".to_string(),
+            status: "pending".to_string(),
+            retry_count: 0,
+            ok_relay_count: 0,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+            last_attempt_at: None,
+            next_retry_at: None,
+            sent_at: None,
+        };
+        store::insert_outbox(&conn, &row).unwrap();
+
+        let (stored_row_msg_id, stored_envelope_json): (String, String) = conn
+            .query_row(
+                "SELECT msg_id, envelope_json FROM outbox WHERE msg_id = ?1",
+                rusqlite::params![row.msg_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let stored_env: envelope::Envelope = serde_json::from_str(&stored_envelope_json).unwrap();
+
+        assert_eq!(stored_env.v, 2);
+        assert!(!stored_env.msg_id.is_empty());
+        assert_eq!(stored_row_msg_id, stored_env.msg_id);
     }
 }

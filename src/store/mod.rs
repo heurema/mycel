@@ -127,7 +127,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_endpoints_unique
 CREATE INDEX IF NOT EXISTS idx_agent_endpoints_lookup
     ON agent_endpoints(agent_ref, transport, enabled, priority);
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 ";
 
 /// Migration script to upgrade a user_version=1 database to user_version=2.
@@ -141,7 +141,7 @@ const MIGRATION_V1_TO_V2: &[&str] = &[
     "ALTER TABLE messages ADD COLUMN transport_msg_id TEXT",
     "UPDATE messages SET msg_id = 'legacy:' || nostr_id WHERE msg_id IS NULL",
     "UPDATE messages SET transport_msg_id = nostr_id WHERE transport_msg_id IS NULL",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id, direction)",
     "CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id)",
     "CREATE TABLE IF NOT EXISTS threads (
         thread_id   TEXT PRIMARY KEY,
@@ -233,6 +233,15 @@ const MIGRATION_V5_TO_V6: &[&str] = &[
     "PRAGMA user_version = 6",
 ];
 
+/// Migration script to upgrade a user_version=6 database to user_version=7.
+/// Rebuilds the logical-message dedup index so inbound and outbound copies can
+/// share a msg_id while retries still dedupe within each direction.
+const MIGRATION_V6_TO_V7: &[&str] = &[
+    "DROP INDEX IF EXISTS idx_messages_msg_id",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id, direction)",
+    "PRAGMA user_version = 7",
+];
+
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
@@ -258,6 +267,9 @@ pub fn open(path: &Path) -> Result<Connection> {
         }
         if existing_version < 6 {
             migrate_to_v6(&conn)?;
+        }
+        if existing_version < 7 {
+            migrate_to_v7(&conn)?;
         }
         conn.execute_batch(SCHEMA)?;
     }
@@ -338,6 +350,14 @@ fn migrate_to_v6(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Applies the migration to v7: makes msg_id dedup direction-aware.
+fn migrate_to_v7(conn: &Connection) -> Result<()> {
+    for stmt in MIGRATION_V6_TO_V7 {
+        conn.execute_batch(stmt)?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Async wrapper — spawn_blocking for all rusqlite calls in async contexts
 // ---------------------------------------------------------------------------
@@ -396,6 +416,13 @@ pub struct MessageRow {
     pub received_at: String,
     /// Sender alias from contacts (populated via JOIN on read, not stored)
     pub sender_alias: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MessageWithMetaRow {
+    pub message: MessageRow,
+    pub meta: crate::types::MessageMeta,
+    pub trust_tier: TrustTier,
 }
 
 #[derive(Debug, Clone)]
@@ -656,6 +683,7 @@ pub fn get_agent_endpoint(
 // ---------------------------------------------------------------------------
 
 /// Insert a message; returns Ok(true) if inserted, Ok(false) if duplicate (INSERT OR IGNORE)
+#[allow(dead_code)] // Legacy v1 insert path retained for compatibility tests and old call sites.
 pub fn insert_message(conn: &Connection, msg: &MessageRow) -> Result<bool> {
     let rows = conn.execute(
         "INSERT OR IGNORE INTO messages
@@ -857,6 +885,59 @@ pub fn get_messages(
     }
 }
 
+/// Get messages with the v2 metadata columns needed by agent-facing JSON output.
+/// Human display continues to use `get_messages` to keep the presentation stable.
+pub fn get_messages_with_meta(
+    conn: &Connection,
+    direction: Direction,
+    trust_tiers: &[TrustTier],
+) -> Result<Vec<MessageWithMetaRow>> {
+    if trust_tiers.is_empty() {
+        let mut stmt = conn.prepare(
+            "SELECT m.nostr_id, m.direction, m.sender, m.recipient, m.content,
+                    m.delivery_status, m.read_status, m.created_at, m.received_at,
+                    c.alias, COALESCE(c.trust_tier, 'unknown'),
+                    m.msg_id, m.thread_id, m.reply_to, m.transport, m.transport_msg_id,
+                    m.source_frame_id
+             FROM messages m
+             LEFT JOIN contacts c ON c.pubkey = m.sender
+             WHERE m.direction = ?1
+             ORDER BY m.created_at ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![direction], map_message_with_meta_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    } else {
+        let placeholders: String = trust_tiers
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT m.nostr_id, m.direction, m.sender, m.recipient, m.content,
+                    m.delivery_status, m.read_status, m.created_at, m.received_at,
+                    c.alias, COALESCE(c.trust_tier, 'unknown'),
+                    m.msg_id, m.thread_id, m.reply_to, m.transport, m.transport_msg_id,
+                    m.source_frame_id
+             FROM messages m
+             LEFT JOIN contacts c ON c.pubkey = m.sender
+             WHERE m.direction = ?1
+               AND COALESCE(c.trust_tier, 'unknown') IN ({})
+             ORDER BY m.created_at ASC",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(direction)];
+        for t in trust_tiers {
+            params_vec.push(Box::new(*t));
+        }
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), map_message_with_meta_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+}
+
 fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
         nostr_id: row.get(0)?,
@@ -869,6 +950,32 @@ fn map_message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
         created_at: row.get(7)?,
         received_at: row.get(8)?,
         sender_alias: row.get(9)?,
+    })
+}
+
+fn map_message_with_meta_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageWithMetaRow> {
+    Ok(MessageWithMetaRow {
+        message: MessageRow {
+            nostr_id: row.get(0)?,
+            direction: row.get(1)?,
+            sender: row.get(2)?,
+            recipient: row.get(3)?,
+            content: row.get(4)?,
+            delivery_status: row.get(5)?,
+            read_status: row.get(6)?,
+            created_at: row.get(7)?,
+            received_at: row.get(8)?,
+            sender_alias: row.get(9)?,
+        },
+        trust_tier: row.get(10)?,
+        meta: crate::types::MessageMeta {
+            msg_id: row.get(11)?,
+            thread_id: row.get(12)?,
+            reply_to: row.get(13)?,
+            transport: row.get(14)?,
+            transport_msg_id: row.get(15)?,
+            source_frame_id: row.get(16)?,
+        },
     })
 }
 
@@ -1811,11 +1918,11 @@ mod tests {
             "missing idx_agent_endpoints_lookup"
         );
 
-        // Check user_version = 6
+        // Check user_version = 7
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6, "user_version should be 6");
+        assert_eq!(version, 7, "user_version should be 7");
     }
 
     #[test]
@@ -1917,6 +2024,198 @@ mod tests {
     }
 
     #[test]
+    fn insert_message_v2_dedupes_by_msg_id_and_direction() {
+        let conn = open_mem();
+
+        let msg_id = "019de95f-0000-7000-8000-000000000003".to_string();
+        let base = MessageRow {
+            nostr_id: "event-in-1".to_string(),
+            direction: Direction::In,
+            sender: "sender".to_string(),
+            recipient: "recipient".to_string(),
+            content: "inbound".to_string(),
+            delivery_status: DeliveryStatus::Received,
+            read_status: ReadStatus::Unread,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+            received_at: "2026-05-03T00:00:01Z".to_string(),
+            sender_alias: None,
+        };
+        let meta = crate::types::MessageMeta {
+            msg_id: Some(msg_id.clone()),
+            thread_id: None,
+            reply_to: None,
+            transport: Some("nostr".to_string()),
+            transport_msg_id: Some("event-in-1".to_string()),
+            source_frame_id: None,
+        };
+
+        assert!(insert_message_v2(&conn, &base, &meta).unwrap());
+
+        let mut retry = base.clone();
+        retry.nostr_id = "event-in-2".to_string();
+        let mut retry_meta = meta.clone();
+        retry_meta.transport_msg_id = Some("event-in-2".to_string());
+        assert!(
+            !insert_message_v2(&conn, &retry, &retry_meta).unwrap(),
+            "same msg_id and direction must dedupe even when transport_msg_id differs"
+        );
+
+        let mut outbound = base;
+        outbound.nostr_id = "event-out-1".to_string();
+        outbound.direction = Direction::Out;
+        outbound.content = "outbound".to_string();
+        outbound.delivery_status = DeliveryStatus::Delivered;
+        outbound.read_status = ReadStatus::Read;
+        let mut outbound_meta = meta;
+        outbound_meta.transport_msg_id = Some("event-out-1".to_string());
+        assert!(
+            insert_message_v2(&conn, &outbound, &outbound_meta).unwrap(),
+            "same msg_id with opposite direction is a distinct mailbox copy"
+        );
+
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE msg_id = ?1",
+                rusqlite::params![msg_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 2);
+    }
+
+    #[test]
+    fn get_messages_with_meta_returns_json_contract_fields() {
+        let conn = open_mem();
+        insert_contact(
+            &conn,
+            &ContactRow {
+                pubkey: "sender".to_string(),
+                alias: Some("alice".to_string()),
+                trust_tier: TrustTier::Known,
+                added_at: "2026-05-03T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+
+        let msg = MessageRow {
+            nostr_id: "event-json-1".to_string(),
+            direction: Direction::In,
+            sender: "sender".to_string(),
+            recipient: "recipient".to_string(),
+            content: "json contract".to_string(),
+            delivery_status: DeliveryStatus::Received,
+            read_status: ReadStatus::Unread,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+            received_at: "2026-05-03T00:00:01Z".to_string(),
+            sender_alias: None,
+        };
+        let meta = crate::types::MessageMeta {
+            msg_id: Some("019de95f-0000-7000-8000-000000000004".to_string()),
+            thread_id: None,
+            reply_to: None,
+            transport: Some("nostr".to_string()),
+            transport_msg_id: Some("event-json-1".to_string()),
+            source_frame_id: Some("nostr:event-json-1".to_string()),
+        };
+        insert_message_v2(&conn, &msg, &meta).unwrap();
+
+        let rows = get_messages_with_meta(&conn, Direction::In, &[TrustTier::Known]).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].message.sender_alias.as_deref(), Some("alice"));
+        assert_eq!(rows[0].trust_tier, TrustTier::Known);
+        assert_eq!(
+            rows[0].meta.msg_id.as_deref(),
+            Some("019de95f-0000-7000-8000-000000000004")
+        );
+        assert_eq!(rows[0].meta.thread_id, None);
+        assert_eq!(rows[0].meta.reply_to, None);
+        assert_eq!(rows[0].meta.transport.as_deref(), Some("nostr"));
+        assert_eq!(
+            rows[0].meta.source_frame_id.as_deref(),
+            Some("nostr:event-json-1")
+        );
+    }
+
+    #[test]
+    fn open_migrates_v6_msg_id_index_to_direction_aware() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("mycel.db");
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE messages (
+                    nostr_id         TEXT PRIMARY KEY,
+                    direction        TEXT NOT NULL,
+                    sender           TEXT NOT NULL,
+                    recipient        TEXT NOT NULL,
+                    content          TEXT NOT NULL,
+                    delivery_status  TEXT NOT NULL DEFAULT 'pending',
+                    read_status      TEXT NOT NULL DEFAULT 'unread',
+                    created_at       TEXT NOT NULL,
+                    received_at      TEXT NOT NULL,
+                    msg_id           TEXT,
+                    thread_id        TEXT,
+                    reply_to         TEXT,
+                    transport        TEXT NOT NULL DEFAULT 'nostr',
+                    transport_msg_id TEXT,
+                    source_frame_id  TEXT
+                );
+                CREATE UNIQUE INDEX idx_messages_msg_id ON messages(msg_id);
+                PRAGMA user_version = 6;
+                ",
+            )
+            .unwrap();
+        }
+
+        let conn = open(&db_path).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
+
+        let index_cols: Vec<String> = conn
+            .prepare("PRAGMA index_info(idx_messages_msg_id)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(2))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(index_cols, vec!["msg_id", "direction"]);
+
+        let msg_id = "019de95f-0000-7000-8000-000000000006".to_string();
+        let inbound = MessageRow {
+            nostr_id: "event-in-v7".to_string(),
+            direction: Direction::In,
+            sender: "sender".to_string(),
+            recipient: "recipient".to_string(),
+            content: "in".to_string(),
+            delivery_status: DeliveryStatus::Received,
+            read_status: ReadStatus::Unread,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+            received_at: "2026-05-03T00:00:01Z".to_string(),
+            sender_alias: None,
+        };
+        let meta = crate::types::MessageMeta {
+            msg_id: Some(msg_id.clone()),
+            thread_id: None,
+            reply_to: None,
+            transport: Some("nostr".to_string()),
+            transport_msg_id: Some("event-in-v7".to_string()),
+            source_frame_id: None,
+        };
+        assert!(insert_message_v2(&conn, &inbound, &meta).unwrap());
+
+        let mut outbound = inbound;
+        outbound.nostr_id = "event-out-v7".to_string();
+        outbound.direction = Direction::Out;
+        let mut outbound_meta = meta;
+        outbound_meta.transport_msg_id = Some("event-out-v7".to_string());
+        assert!(insert_message_v2(&conn, &outbound, &outbound_meta).unwrap());
+    }
+
+    #[test]
     fn open_migrates_v1_db_via_file() {
         // E2E migration test: create a v1 DB on disk, then open() it.
         // This is the exact path that failed in production: SCHEMA's CREATE INDEX
@@ -1972,7 +2271,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 6, "user_version must be 6 after migration");
+        assert_eq!(version, 7, "user_version must be 7 after migration");
 
         let msg_id: String = conn
             .query_row(

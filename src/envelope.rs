@@ -104,7 +104,8 @@ impl Envelope {
         }
     }
 
-    /// Create a v1-compatible Envelope (legacy; used by send command until migrated).
+    /// Create a v1-compatible Envelope.
+    #[allow(dead_code)] // Legacy constructor kept for v1 wire compatibility tests and old callers.
     pub fn new(from: String, to: String, msg: String) -> Self {
         Self {
             v: 1,
