@@ -328,6 +328,8 @@ section:last-of-type { border-bottom: none; }
 
 .step-left { display: flex; flex-direction: column; gap: 0.5rem; }
 
+.step > div:last-child { min-width: 0; }
+
 .step-num {
   width: 2rem;
   height: 2rem;
@@ -353,6 +355,7 @@ section:last-of-type { border-bottom: none; }
 .code-block {
   background: var(--text);
   border-radius: 8px;
+  max-width: 100%;
   overflow: hidden;
 }
 
@@ -360,6 +363,7 @@ section:last-of-type { border-bottom: none; }
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.75rem;
   padding: 0.5rem 0.85rem;
   border-bottom: 1px solid rgba(255,255,255,0.08);
 }
@@ -368,6 +372,10 @@ section:last-of-type { border-bottom: none; }
   font-family: var(--mono);
   font-size: 0.82rem;
   color: #ddd;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .code-bar .dollar { color: #666; }
@@ -390,6 +398,7 @@ section:last-of-type { border-bottom: none; }
   color: var(--accent-light);
   line-height: 1.6;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ─── FEATURE GRID ─── */
