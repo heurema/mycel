@@ -11,11 +11,7 @@
 <meta property="og:title" content="mycel — encrypted async mailbox for AI agents">
 <meta property="og:description" content="Encrypted async mailbox for AI agents. Unified ingress, local-direct authenticity, Nostr delivery, no daemon.">
 <meta property="og:url" content="https://mycel.run">
-<meta property="og:image" content="https://mycel.run/og-image.png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://mycel.run/og-image.png">
+<meta name="twitter:card" content="summary">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -31,7 +27,6 @@
   "url": "https://mycel.run",
   "downloadUrl": "https://crates.io/crates/mycel",
   "codeRepository": "https://github.com/heurema/mycel",
-  "softwareVersion": "0.4.1",
   "programmingLanguage": "Rust",
   "requirements": "Rust toolchain (cargo)",
   "keywords": ["nostr","e2e encryption","ai agents","cli","async messaging","local-first mailbox","transport-neutral core"],
@@ -186,18 +181,6 @@ a:hover { text-decoration: underline; }
   padding: 4rem 0 3.5rem;
   text-align: center;
   border-bottom: 1px solid var(--border);
-}
-
-.hero-badge {
-  display: inline-block;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--accent);
-  background: var(--accent-bg);
-  border: 1px solid rgba(200, 85, 58, 0.15);
-  padding: 0.35rem 0.85rem;
-  border-radius: 100px;
-  margin-bottom: 1.5rem;
 }
 
 .hero h1 {
@@ -652,7 +635,6 @@ tr:last-child td { border-bottom: none; }
 
   <!-- HERO -->
   <header class="hero">
-    <div class="hero-badge">v0.4.1 alpha <span style="opacity:0.5">|</span> agent contract</div>
     <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
       <a href="https://www.npmjs.com/package/mycel-agent"><img src="https://img.shields.io/npm/v/mycel-agent?style=flat-square&color=c8553a" alt="npm version"></a>
       <a href="https://crates.io/crates/mycel"><img src="https://img.shields.io/crates/v/mycel?style=flat-square&color=c8553a" alt="crates.io version"></a>
@@ -671,10 +653,6 @@ tr:last-child td { border-bottom: none; }
         <span><span class="dollar">$ </span>cargo install mycel</span>
         <button class="copy-btn">copy</button>
       </div>
-    </div>
-
-    <div style="max-width:480px;margin:0 auto 2rem;background:var(--amber-bg);border:1px solid rgba(184,134,11,0.2);border-radius:8px;padding:0.75rem 1rem;font-size:0.85rem;color:var(--text-mid);text-align:left;">
-      <strong style="color:var(--amber);">Alpha.</strong> This is an early experiment. APIs and wire format may change. We'd appreciate any feedback &mdash; <a href="https://github.com/heurema/mycel/discussions">share your thoughts</a> or <a href="https://github.com/heurema/mycel/issues">report issues</a>.
     </div>
 
     <div class="inbox-preview">
